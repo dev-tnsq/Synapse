@@ -28,6 +28,15 @@ export class OperationRegistry {
     this.byRoute.set(key, operation);
   }
 
+  public registerMany(operations: readonly CanonicalOperationSpec[]): readonly string[] {
+    const registeredOperationIds: string[] = [];
+    for (const operation of operations) {
+      this.register(operation);
+      registeredOperationIds.push(operation.id);
+    }
+    return registeredOperationIds;
+  }
+
   public getById(operationId: string): CanonicalOperationSpec | undefined {
     return this.byId.get(operationId);
   }

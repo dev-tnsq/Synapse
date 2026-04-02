@@ -2,6 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { URL } from "node:url";
 
+import {
+  parseSorobanAbiToCanonical,
+  type SorobanAbiArg,
+  type SorobanAbiFn,
+  type SorobanContractAbi,
+} from "../../core/abi-parser";
 import { OperationRegistry } from "../../core/operation-registry";
 import {
   GatewayError,
@@ -100,6 +106,149 @@ function parsePaymentProof(headers: Record<string, string>): PaymentProof | null
   }
 }
 
+function isJsonObject(value: JsonValue): value is Record<string, JsonValue> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseRegisterContractBody(body: JsonValue): {
+  readonly contractId: string;
+  readonly abi: SorobanContractAbi;
+  readonly basePath?: string;
+} {
+  if (!isJsonObject(body)) {
+    throw new GatewayError("INVALID_REQUEST", "Request body must be an object", 400);
+  }
+
+  const contractId = body.contractId;
+  if (typeof contractId !== "string" || contractId.trim().length === 0) {
+    throw new GatewayError("INVALID_REQUEST", "contractId must be a non-empty string", 400);
+  }
+
+  const abi = body.abi;
+  if (!isJsonObject(abi)) {
+    throw new GatewayError("INVALID_REQUEST", "abi must be an object", 400);
+  }
+
+  const functions = abi.functions;
+  if (!Array.isArray(functions)) {
+    throw new GatewayError("INVALID_REQUEST", "abi.functions must be an array", 400);
+  }
+
+  const parsedFunctions: SorobanAbiFn[] = functions.map((fn, fnIndex) => {
+    if (!isJsonObject(fn)) {
+      throw new GatewayError("INVALID_REQUEST", `abi.functions[${fnIndex}] must be an object`, 400);
+    }
+
+    const name = fn.name;
+    if (typeof name !== "string" || name.trim().length === 0) {
+      throw new GatewayError("INVALID_REQUEST", `abi.functions[${fnIndex}].name must be a non-empty string`, 400);
+    }
+
+    const inputs = fn.inputs;
+    if (!Array.isArray(inputs)) {
+      throw new GatewayError("INVALID_REQUEST", `abi.functions[${fnIndex}].inputs must be an array`, 400);
+    }
+
+    const parsedInputs: SorobanAbiArg[] = inputs.map((input, inputIndex) => {
+      if (!isJsonObject(input)) {
+        throw new GatewayError(
+          "INVALID_REQUEST",
+          `abi.functions[${fnIndex}].inputs[${inputIndex}] must be an object`,
+          400,
+        );
+      }
+
+      const inputName = input.name;
+      const inputType = input.type;
+      if (typeof inputName !== "string" || inputName.trim().length === 0) {
+        throw new GatewayError(
+          "INVALID_REQUEST",
+          `abi.functions[${fnIndex}].inputs[${inputIndex}].name must be a non-empty string`,
+          400,
+        );
+      }
+      if (typeof inputType !== "string" || inputType.trim().length === 0) {
+        throw new GatewayError(
+          "INVALID_REQUEST",
+          `abi.functions[${fnIndex}].inputs[${inputIndex}].type must be a non-empty string`,
+          400,
+        );
+      }
+
+      return {
+        name: inputName,
+        type: inputType,
+        required: typeof input.required === "boolean" ? input.required : undefined,
+        doc: typeof input.doc === "string" ? input.doc : undefined,
+      };
+    });
+
+    const outputs = fn.outputs;
+    let parsedOutputs: SorobanAbiArg[] | undefined;
+    if (outputs !== undefined) {
+      if (!Array.isArray(outputs)) {
+        throw new GatewayError("INVALID_REQUEST", `abi.functions[${fnIndex}].outputs must be an array`, 400);
+      }
+      parsedOutputs = outputs.map((output, outputIndex) => {
+        if (!isJsonObject(output)) {
+          throw new GatewayError(
+            "INVALID_REQUEST",
+            `abi.functions[${fnIndex}].outputs[${outputIndex}] must be an object`,
+            400,
+          );
+        }
+
+        const outputName = output.name;
+        const outputType = output.type;
+        if (typeof outputName !== "string" || outputName.trim().length === 0) {
+          throw new GatewayError(
+            "INVALID_REQUEST",
+            `abi.functions[${fnIndex}].outputs[${outputIndex}].name must be a non-empty string`,
+            400,
+          );
+        }
+        if (typeof outputType !== "string" || outputType.trim().length === 0) {
+          throw new GatewayError(
+            "INVALID_REQUEST",
+            `abi.functions[${fnIndex}].outputs[${outputIndex}].type must be a non-empty string`,
+            400,
+          );
+        }
+
+        return {
+          name: outputName,
+          type: outputType,
+          required: typeof output.required === "boolean" ? output.required : undefined,
+          doc: typeof output.doc === "string" ? output.doc : undefined,
+        };
+      });
+    }
+
+    return {
+      name,
+      inputs: parsedInputs,
+      outputs: parsedOutputs,
+      doc: typeof fn.doc === "string" ? fn.doc : undefined,
+      readonly: typeof fn.readonly === "boolean" ? fn.readonly : undefined,
+      payable: typeof fn.payable === "boolean" ? fn.payable : undefined,
+      priceStroops: typeof fn.priceStroops === "number" ? fn.priceStroops : undefined,
+    };
+  });
+
+  const basePath = body.basePath;
+  if (basePath !== undefined && typeof basePath !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "basePath must be a string when provided", 400);
+  }
+
+  return {
+    contractId,
+    abi: {
+      functions: parsedFunctions,
+    },
+    basePath,
+  };
+}
+
 function sendJson(
   res: ServerResponse,
   statusCode: number,
@@ -144,6 +293,40 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
         operations: deps.registry.list(),
       });
       return true;
+    }
+
+    if (method === "POST" && path === "/api/v1/contracts/register") {
+      try {
+        const body = await readJsonBody(req);
+        const parsedBody = parseRegisterContractBody(body);
+        const operations = parseSorobanAbiToCanonical(
+          parsedBody.contractId,
+          parsedBody.abi,
+          parsedBody.basePath,
+        );
+        const registeredOperationIds = deps.registry.registerMany(operations);
+
+        sendJson(res, 200, {
+          ok: true,
+          contractId: parsedBody.contractId,
+          registeredOperationIds,
+        });
+        return true;
+      } catch (error: unknown) {
+        if (isGatewayError(error)) {
+          sendJson(res, error.status, error.toFailure());
+          return true;
+        }
+
+        sendJson(res, 400, {
+          ok: false,
+          error: {
+            code: "INVALID_REQUEST",
+            message: "Invalid request payload",
+          },
+        });
+        return true;
+      }
     }
 
     const operation = deps.registry.getByRoute(method as "GET" | "POST", path);
