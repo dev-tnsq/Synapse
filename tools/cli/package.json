@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "zod": "^3.23.8"
   }
 }
