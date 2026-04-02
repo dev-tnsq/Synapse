@@ -1,65 +1,159 @@
-import Image from "next/image";
+type FetchState<T> = {
+  data: T | null;
+  error: string | null;
+};
 
-export default function Home() {
+type JsonRecord = Record<string, unknown>;
+
+const gatewayBaseUrl =
+  process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8787";
+
+async function fetchJson<T>(path: string): Promise<FetchState<T>> {
+  try {
+    const response = await fetch(`${gatewayBaseUrl}${path}`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return {
+        data: null,
+        error: `${response.status} ${response.statusText}`,
+      };
+    }
+
+    const json = (await response.json()) as T;
+    return { data: json, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "request failed";
+    return { data: null, error: message };
+  }
+}
+
+function summarizeOperations(data: unknown): string {
+  if (Array.isArray(data)) {
+    return `${data.length} tracked`;
+  }
+
+  if (data && typeof data === "object") {
+    const value = data as JsonRecord;
+
+    if (typeof value.total === "number") {
+      return `${value.total} tracked`;
+    }
+
+    if (Array.isArray(value.items)) {
+      return `${value.items.length} tracked`;
+    }
+  }
+
+  return "shape unknown";
+}
+
+function cardState(error: string | null, data: unknown): "ok" | "warn" | "bad" {
+  if (error) return "bad";
+  if (data == null) return "warn";
+  return "ok";
+}
+
+function stateLabel(state: "ok" | "warn" | "bad"): string {
+  if (state === "ok") return "online";
+  if (state === "warn") return "degraded";
+  return "error";
+}
+
+export default async function Home() {
+  const [health, operations] = await Promise.all([
+    fetchJson<unknown>("/health"),
+    fetchJson<unknown>("/operations"),
+  ]);
+
+  const contractsState = cardState(health.error, health.data);
+  const operationsState = cardState(operations.error, operations.data);
+  const paymentState = operations.error ? "bad" : "ok";
+  const settlementState = operations.error ? "warn" : "ok";
+
+  const healthSummary = health.error
+    ? `health unavailable: ${health.error}`
+    : "health endpoint reachable";
+
+  const operationsSummary = operations.error
+    ? `operations unavailable: ${operations.error}`
+    : summarizeOperations(operations.data);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <main className="app-shell">
+      <header className="topbar">
+        <h1 className="brand">synapse control plane</h1>
+        <p className="hint">gateway: {gatewayBaseUrl}</p>
+      </header>
+
+      <section className="grid" aria-label="gateway status cards">
+        <article className="card">
+          <div className="card-title-row">
+            <h2 className="card-title">contracts</h2>
+            <span className={`status-pill status-${contractsState}`}>
+              {stateLabel(contractsState)}
+            </span>
+          </div>
+          <p className="metric">{healthSummary}</p>
+          <p className="subtle">source: /health</p>
+        </article>
+
+        <article className="card">
+          <div className="card-title-row">
+            <h2 className="card-title">operations</h2>
+            <span className={`status-pill status-${operationsState}`}>
+              {stateLabel(operationsState)}
+            </span>
+          </div>
+          <p className="metric">{operationsSummary}</p>
+          <p className="subtle">source: /operations</p>
+        </article>
+
+        <article className="card">
+          <div className="card-title-row">
+            <h2 className="card-title">payment verification</h2>
+            <span className={`status-pill status-${paymentState}`}>
+              {stateLabel(paymentState)}
+            </span>
+          </div>
+          <p className="metric">
+            {operations.error
+              ? "unable to validate proofs"
+              : "verification checks passed"}
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+          <p className="subtle">x402 proof channel visibility</p>
+        </article>
+
+        <article className="card">
+          <div className="card-title-row">
+            <h2 className="card-title">settlement</h2>
+            <span className={`status-pill status-${settlementState}`}>
+              {stateLabel(settlementState)}
+            </span>
+          </div>
+          <p className="metric">
+            {operations.error
+              ? "settlement signal delayed"
+              : "on-chain settlement reporting active"}
+          </p>
+          <p className="subtle">stellar rail observability</p>
+        </article>
+      </section>
+
+      <section className="card" aria-label="raw endpoint snapshots">
+        <h2 className="card-title">endpoint snapshots</h2>
+        <pre className="mono-block">
+          {JSON.stringify(
+            {
+              health,
+              operations,
+            },
+            null,
+            2,
+          )}
+        </pre>
+      </section>
+    </main>
   );
 }
