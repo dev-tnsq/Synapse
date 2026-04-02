@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+const { safeBase64Encode } = require("x402/shared") as {
+  readonly safeBase64Encode: (data: string) => string;
+};
+
 import type { JsonObject } from "../types/canonical";
 
 export interface ChallengeInput {
@@ -42,7 +46,7 @@ export function buildX402Challenge(input: ChallengeInput): X402Challenge {
     expiresAt,
   };
 
-  const encoded = Buffer.from(JSON.stringify(challenge), "utf8").toString("base64url");
+  const encoded = safeBase64Encode(JSON.stringify(challenge));
 
   return {
     status: 402,

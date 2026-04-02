@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { StellarPaymentInspector } from "../stellar/horizon";
 import { GatewayError } from "../types/canonical";
 
 export interface PaymentProof {
@@ -9,8 +10,10 @@ export interface PaymentProof {
   readonly resource: string;
   readonly amountStroops: number;
   readonly nonce: string;
-  readonly signature: string;
-  readonly timestamp: number;
+  readonly signature?: string;
+  readonly txHash?: string;
+  readonly networkPassphrase?: string;
+  readonly timestamp?: number;
 }
 
 export interface PaymentReceipt {
@@ -30,9 +33,16 @@ export interface PaymentExpectation {
 export class InMemoryPaymentVerifier {
   private readonly seenProofs = new Map<string, number>();
 
-  public constructor(private readonly maxProofAgeMs: number) {}
+  public constructor(
+    private readonly maxProofAgeMs: number,
+    private readonly paymentInspector?: StellarPaymentInspector,
+  ) {}
 
-  public verify(proof: PaymentProof, expected: PaymentExpectation, now = Date.now()): PaymentReceipt {
+  public async verify(
+    proof: PaymentProof,
+    expected: PaymentExpectation,
+    now = Date.now(),
+  ): Promise<PaymentReceipt> {
     this.purge(now);
 
     if (proof.operationId !== expected.operationId || proof.resource !== expected.resource) {
@@ -43,12 +53,38 @@ export class InMemoryPaymentVerifier {
       throw new GatewayError("INVALID_PAYMENT_PROOF", "Insufficient proof amount", 402);
     }
 
-    if (!proof.signature || !proof.nonce) {
-      throw new GatewayError("INVALID_PAYMENT_PROOF", "Proof is missing signature fields", 402);
+    const hasSignatureProof = Boolean(proof.signature && proof.nonce);
+    const hasTxHashProof = typeof proof.txHash === "string" && proof.txHash.length > 0;
+    if (!hasSignatureProof && !hasTxHashProof) {
+      throw new GatewayError(
+        "INVALID_PAYMENT_PROOF",
+        "Proof must include either signature or txHash",
+        402,
+      );
     }
 
-    if (Math.abs(now - proof.timestamp) > this.maxProofAgeMs) {
-      throw new GatewayError("INVALID_PAYMENT_PROOF", "Proof timestamp is outside accepted window", 402);
+    if (hasSignatureProof) {
+      if (typeof proof.timestamp !== "number") {
+        throw new GatewayError("INVALID_PAYMENT_PROOF", "Proof is missing timestamp", 402);
+      }
+      if (Math.abs(now - proof.timestamp) > this.maxProofAgeMs) {
+        throw new GatewayError(
+          "INVALID_PAYMENT_PROOF",
+          "Proof timestamp is outside accepted window",
+          402,
+        );
+      }
+    }
+
+    if (hasTxHashProof && this.paymentInspector) {
+      const inspection = await this.paymentInspector.inspect(proof.txHash!, now);
+      if (!inspection.ok) {
+        throw new GatewayError(
+          "INVALID_PAYMENT_PROOF",
+          `Transaction proof invalid: ${inspection.reason ?? "UNVERIFIED_TX"}`,
+          402,
+        );
+      }
     }
 
     if (this.seenProofs.has(proof.proofId)) {

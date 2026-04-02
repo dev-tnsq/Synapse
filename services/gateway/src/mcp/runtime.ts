@@ -125,7 +125,7 @@ export class McpGatewayRuntime {
       }
 
       try {
-        this.deps.paymentVerifier.verify(context.paymentProof, {
+        await this.deps.paymentVerifier.verify(context.paymentProof, {
           operationId: operation.id,
           resource: operation.path,
           minAmountStroops: operation.priceStroops,

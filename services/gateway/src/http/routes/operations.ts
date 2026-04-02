@@ -241,7 +241,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
           return true;
         }
 
-        paymentReceipt = deps.paymentVerifier.verify(proof, {
+        paymentReceipt = await deps.paymentVerifier.verify(proof, {
           operationId: operation.id,
           resource: operation.path,
           minAmountStroops: operation.priceStroops,

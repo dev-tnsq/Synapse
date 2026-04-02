@@ -4,6 +4,7 @@ import { loadConfig, type GatewayConfig } from "./config";
 import { OperationRegistry } from "./core/operation-registry";
 import { createOperationsRouteHandler } from "./http/routes/operations";
 import { McpGatewayRuntime } from "./mcp/runtime";
+import { StellarPaymentInspector } from "./stellar/horizon";
 import type {
   CanonicalOperationInvocation,
   CanonicalOperationResult,
@@ -48,7 +49,12 @@ export function createGatewayServer(options: GatewayServerOptions) {
   const idempotencyStore = new InMemoryIdempotencyStore<CanonicalOperationResult>(
     config.idempotency.ttlMs,
   );
-  const paymentVerifier = new InMemoryPaymentVerifier(config.payment.maxProofAgeMs);
+  const paymentInspector = new StellarPaymentInspector(
+    config.payment.horizonUrl,
+    config.payment.maxTxAgeMs,
+    config.payment.payToAddress,
+  );
+  const paymentVerifier = new InMemoryPaymentVerifier(config.payment.maxProofAgeMs, paymentInspector);
   const execute = options.execute ?? defaultExecutor;
 
   const operationsHandler = createOperationsRouteHandler({
