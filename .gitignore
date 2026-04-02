@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+target/
+dist/
+.next/
+out/
+coverage/
+apps/_backups/
+contracts/target/
+contracts/artifacts/
+contracts/cache/    

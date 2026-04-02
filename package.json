@@ -1,0 +1,14 @@
+{
+  "name": "synapse",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10",
+  "workspaces": ["apps/*", "services/*", "tools/*"],
+  "scripts": {
+    "dev": "npm run -ws dev --if-present",
+    "build": "npm run -ws build --if-present",
+    "test": "npm run -ws test --if-present",
+    "lint": "npm run -ws lint --if-present",
+    "typecheck": "npm run -ws typecheck --if-present"
+  }
+}
