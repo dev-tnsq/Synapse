@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 
-const { safeBase64Encode } = require("x402/shared") as {
-  readonly safeBase64Encode: (data: string) => string;
-};
-
 import type { JsonObject } from "../types/canonical";
+
+function safeBase64Encode(data: string): string {
+  return Buffer.from(data, "utf8").toString("base64url");
+}
 
 export interface ChallengeInput {
   readonly operationId: string;

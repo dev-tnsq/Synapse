@@ -104,57 +104,47 @@ export class InMemoryPaymentVerifier {
     if (hasTxHashProof) {
       const reasonChain: string[] = [];
 
-      if (this.facilitator?.isEnabled()) {
-        const facilitatorResult = await this.facilitator.verifyTx({
-          txHash: proof.txHash!,
-          operationId: expected.operationId,
-          resource: expected.resource,
-          minAmountStroops: expected.minAmountStroops,
-        });
-        if (facilitatorResult.ok) {
-          // Facilitator attestation is sufficient for txHash-based proofs.
-        } else {
-          reasonChain.push(`FACILITATOR:${facilitatorResult.reason ?? "REJECTED"}`);
-          if (this.paymentInspector) {
-            const inspection = await this.paymentInspector.inspect(
-              proof.txHash!,
-              now,
-              expected.minAmountStroops,
-            );
-            if (!inspection.ok) {
-              reasonChain.push(`INSPECTOR:${inspection.reason ?? "UNVERIFIED_TX"}`);
-              throw new GatewayError(
-                "INVALID_PAYMENT_PROOF",
-                `Transaction proof invalid: ${reasonChain.join(" -> ")}`,
-                402,
-              );
-            }
-          } else {
-            reasonChain.push("INSPECTOR:UNAVAILABLE");
-            throw new GatewayError(
-              "INVALID_PAYMENT_PROOF",
-              `Transaction proof invalid: ${reasonChain.join(" -> ")}`,
-              402,
-            );
-          }
-        }
-      } else if (this.paymentInspector) {
-        const inspection = await this.paymentInspector.inspect(
-          proof.txHash!,
-          now,
-          expected.minAmountStroops,
-        );
-        if (!inspection.ok) {
-          throw new GatewayError(
-            "INVALID_PAYMENT_PROOF",
-            `Transaction proof invalid: ${inspection.reason ?? "UNVERIFIED_TX"}`,
-            402,
-          );
-        }
+      if (!this.facilitator) {
+        reasonChain.push("FACILITATOR:UNAVAILABLE");
+      } else if (!this.facilitator.isEnabled()) {
+        reasonChain.push("FACILITATOR:DISABLED");
       } else {
+        try {
+          const facilitatorResult = await this.facilitator.verifyTx({
+            txHash: proof.txHash!,
+            operationId: expected.operationId,
+            resource: expected.resource,
+            minAmountStroops: expected.minAmountStroops,
+          });
+          if (!facilitatorResult.ok) {
+            reasonChain.push(`FACILITATOR:${facilitatorResult.reason ?? "REJECTED"}`);
+          }
+        } catch {
+          reasonChain.push("FACILITATOR:UNAVAILABLE");
+        }
+      }
+
+      if (!this.paymentInspector) {
+        reasonChain.push("INSPECTOR:UNAVAILABLE");
+      } else {
+        try {
+          const inspection = await this.paymentInspector.inspect(
+            proof.txHash!,
+            now,
+            expected.minAmountStroops,
+          );
+          if (!inspection.ok) {
+            reasonChain.push(`INSPECTOR:${inspection.reason ?? "UNVERIFIED_TX"}`);
+          }
+        } catch {
+          reasonChain.push("INSPECTOR:UNAVAILABLE");
+        }
+      }
+
+      if (reasonChain.length > 0) {
         throw new GatewayError(
           "INVALID_PAYMENT_PROOF",
-          "Transaction proof invalid: FACILITATOR:DISABLED -> INSPECTOR:UNAVAILABLE",
+          `Transaction proof invalid: ${reasonChain.join(" -> ")}`,
           402,
         );
       }

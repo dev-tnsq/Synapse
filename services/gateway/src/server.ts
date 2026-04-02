@@ -18,7 +18,7 @@ import { InMemoryPaymentVerifier } from "./x402/verifier";
 export interface GatewayServerOptions {
   readonly config?: GatewayConfig;
   readonly operations: readonly CanonicalOperationSpec[];
-  readonly execute?: (invocation: CanonicalOperationInvocation) => Promise<JsonValue>;
+  readonly execute: (invocation: CanonicalOperationInvocation) => Promise<JsonValue>;
 }
 
 function notFound(res: ServerResponse): void {
@@ -34,15 +34,6 @@ function notFound(res: ServerResponse): void {
     }),
   );
 }
-
-const defaultExecutor = async (invocation: CanonicalOperationInvocation): Promise<JsonValue> => {
-  return {
-    operationId: invocation.operationId,
-    requestId: invocation.requestId,
-    echoedBody: invocation.body,
-    echoedQuery: invocation.query,
-  };
-};
 
 export function createGatewayServer(options: GatewayServerOptions) {
   const config = options.config ?? loadConfig();
@@ -61,7 +52,7 @@ export function createGatewayServer(options: GatewayServerOptions) {
     paymentInspector,
     facilitatorClient,
   );
-  const execute = options.execute ?? defaultExecutor;
+  const execute = options.execute;
 
   const operationsHandler = createOperationsRouteHandler({
     registry,
@@ -97,44 +88,8 @@ export function createGatewayServer(options: GatewayServerOptions) {
   };
 }
 
-export const sampleOperations: readonly CanonicalOperationSpec[] = [
-  {
-    id: "registry.get_contract",
-    contractId: "registry",
-    functionName: "get_contract",
-    title: "Get Registered Contract",
-    description: "Resolve a contract address from registry by key",
-    method: "GET",
-    path: "/v1/registry/get_contract",
-    paymentRequired: true,
-    priceStroops: 100,
-    request: {
-      query: {
-        key: {
-          type: "string",
-          required: true,
-          description: "Registry key",
-        },
-      },
-    },
-    response: {
-      data: {
-        contractId: {
-          type: "string",
-          required: true,
-          description: "Resolved contract id",
-        },
-      },
-    },
-  },
-];
-
-export async function startGateway(options?: Partial<GatewayServerOptions>): Promise<void> {
-  const instance = createGatewayServer({
-    operations: options?.operations ?? sampleOperations,
-    config: options?.config,
-    execute: options?.execute,
-  });
+export async function startGateway(options: GatewayServerOptions): Promise<void> {
+  const instance = createGatewayServer(options);
 
   await new Promise<void>((resolve) => {
     instance.server.listen(instance.config.port, instance.config.host, () => {

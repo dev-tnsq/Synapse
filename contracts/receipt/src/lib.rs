@@ -128,7 +128,7 @@ mod tests {
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
     #[test]
-    fn placeholder_receipt_test() {
+    fn receipt_admin_init_test() {
         let env = Env::default();
         env.mock_all_auths();
 
