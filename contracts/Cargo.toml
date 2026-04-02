@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "registry",
+  "receipt",
+]
+resolver = "2"
