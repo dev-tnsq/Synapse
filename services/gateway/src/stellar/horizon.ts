@@ -13,6 +13,7 @@ interface HorizonTransactionLike {
 interface HorizonOperationLike {
   readonly type?: string;
   readonly to?: string;
+  readonly amount?: string;
 }
 
 const TX_HASH_REGEX = /^[0-9a-fA-F]{64}$/;
@@ -36,7 +37,11 @@ export class StellarPaymentInspector {
     }
   }
 
-  public async inspect(txHash: string, now = Date.now()): Promise<StellarPaymentInspectionResult> {
+  public async inspect(
+    txHash: string,
+    now = Date.now(),
+    minAmountStroops?: number,
+  ): Promise<StellarPaymentInspectionResult> {
     if (!TX_HASH_REGEX.test(txHash)) {
       return { ok: false, reason: "INVALID_TX_HASH_FORMAT" };
     }
@@ -75,18 +80,49 @@ export class StellarPaymentInspector {
       return { ok: false, reason: "TX_OPS_UNAVAILABLE", paidAt };
     }
 
-    const hasExpectedPayment = (operationsPage.records ?? []).some((operation) => {
+    const matchingOperations = (operationsPage.records ?? []).filter((operation) => {
       if (!operation.type || !PAYMENT_OPERATION_TYPES.has(operation.type)) {
         return false;
       }
       return operation.to === destination;
     });
 
+    const hasExpectedPayment = matchingOperations.length > 0;
+
     if (!hasExpectedPayment) {
       return { ok: false, reason: "PAYMENT_DESTINATION_MISMATCH", paidAt };
     }
 
+    if (typeof minAmountStroops === "number") {
+      const deliveredAmountStroops = matchingOperations.reduce((total, operation) => {
+        const parsedAmount = this.parseAmountToStroops(operation.amount);
+        if (parsedAmount === undefined) {
+          return total;
+        }
+        return total + parsedAmount;
+      }, 0);
+
+      if (deliveredAmountStroops < minAmountStroops) {
+        return { ok: false, reason: "PAYMENT_UNDERPAID", paidAt };
+      }
+    }
+
     return { ok: true, paidAt };
+  }
+
+  private parseAmountToStroops(rawAmount: string | undefined): number | undefined {
+    if (!rawAmount || !/^\d+(?:\.\d{1,7})?$/.test(rawAmount)) {
+      return undefined;
+    }
+
+    const [wholePart, fractionPart = ""] = rawAmount.split(".");
+    const paddedFraction = `${fractionPart}0000000`.slice(0, 7);
+    const stroops = BigInt(wholePart) * 10_000_000n + BigInt(paddedFraction);
+    if (stroops > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return undefined;
+    }
+
+    return Number(stroops);
   }
 
   private toTimestamp(raw: string | undefined): number | undefined {

@@ -14,6 +14,14 @@ export interface PaymentProof {
   readonly txHash?: string;
   readonly networkPassphrase?: string;
   readonly timestamp?: number;
+  readonly mppSummary?: {
+    readonly deliveredAmountStroops: number;
+    readonly legs: number;
+  };
+  readonly paymentLegs?: ReadonlyArray<{
+    readonly destination: string;
+    readonly amountStroops: number;
+  }>;
 }
 
 export interface PaymentReceipt {
@@ -49,7 +57,22 @@ export class InMemoryPaymentVerifier {
       throw new GatewayError("INVALID_PAYMENT_PROOF", "Proof does not match requested operation", 402);
     }
 
-    if (proof.amountStroops < expected.minAmountStroops) {
+    if (proof.mppSummary) {
+      if (
+        proof.mppSummary.legs <= 0 ||
+        proof.mppSummary.deliveredAmountStroops < expected.minAmountStroops
+      ) {
+        throw new GatewayError("INVALID_PAYMENT_PROOF", "Invalid MPP summary amount", 402);
+      }
+    } else if (proof.paymentLegs) {
+      const deliveredAmountStroops = proof.paymentLegs.reduce((sum, leg) => {
+        return sum + leg.amountStroops;
+      }, 0);
+
+      if (deliveredAmountStroops < expected.minAmountStroops) {
+        throw new GatewayError("INVALID_PAYMENT_PROOF", "Insufficient legged proof amount", 402);
+      }
+    } else if (proof.amountStroops < expected.minAmountStroops) {
       throw new GatewayError("INVALID_PAYMENT_PROOF", "Insufficient proof amount", 402);
     }
 
@@ -77,7 +100,11 @@ export class InMemoryPaymentVerifier {
     }
 
     if (hasTxHashProof && this.paymentInspector) {
-      const inspection = await this.paymentInspector.inspect(proof.txHash!, now);
+      const inspection = await this.paymentInspector.inspect(
+        proof.txHash!,
+        now,
+        expected.minAmountStroops,
+      );
       if (!inspection.ok) {
         throw new GatewayError(
           "INVALID_PAYMENT_PROOF",
