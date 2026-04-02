@@ -12,6 +12,7 @@ export interface GatewayConfig {
     readonly maxProofAgeMs: number;
     readonly horizonUrl?: string;
     readonly maxTxAgeMs: number;
+    readonly facilitatorUrl?: string;
   };
   readonly idempotency: {
     readonly ttlMs: number;
@@ -30,6 +31,7 @@ const DEFAULT_CONFIG: GatewayConfig = {
     maxProofAgeMs: 5 * 60 * 1000,
     horizonUrl: undefined,
     maxTxAgeMs: 5 * 60 * 1000,
+    facilitatorUrl: undefined,
   },
   idempotency: {
     ttlMs: 10 * 60 * 1000,
@@ -88,6 +90,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
       ),
       horizonUrl: env.GATEWAY_HORIZON_URL ?? DEFAULT_CONFIG.payment.horizonUrl,
       maxTxAgeMs: parsePositiveInt(env.GATEWAY_MAX_TX_AGE_MS, DEFAULT_CONFIG.payment.maxTxAgeMs),
+      facilitatorUrl:
+        env.GATEWAY_X402_FACILITATOR_URL ?? DEFAULT_CONFIG.payment.facilitatorUrl,
     },
     idempotency: {
       ttlMs: parsePositiveInt(env.GATEWAY_IDEMPOTENCY_TTL_MS, DEFAULT_CONFIG.idempotency.ttlMs),

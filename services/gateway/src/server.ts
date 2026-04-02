@@ -11,6 +11,7 @@ import type {
   CanonicalOperationSpec,
   JsonValue,
 } from "./types/canonical";
+import { X402FacilitatorClient } from "./x402/facilitator";
 import { InMemoryIdempotencyStore } from "./x402/idempotency-store";
 import { InMemoryPaymentVerifier } from "./x402/verifier";
 
@@ -54,7 +55,12 @@ export function createGatewayServer(options: GatewayServerOptions) {
     config.payment.maxTxAgeMs,
     config.payment.payToAddress,
   );
-  const paymentVerifier = new InMemoryPaymentVerifier(config.payment.maxProofAgeMs, paymentInspector);
+  const facilitatorClient = new X402FacilitatorClient(config.payment.facilitatorUrl);
+  const paymentVerifier = new InMemoryPaymentVerifier(
+    config.payment.maxProofAgeMs,
+    paymentInspector,
+    facilitatorClient,
+  );
   const execute = options.execute ?? defaultExecutor;
 
   const operationsHandler = createOperationsRouteHandler({

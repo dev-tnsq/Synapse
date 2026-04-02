@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { StellarPaymentInspector } from "../stellar/horizon";
 import { GatewayError } from "../types/canonical";
+import type { X402FacilitatorClient } from "./facilitator";
 
 export interface PaymentProof {
   readonly proofId: string;
@@ -44,6 +45,7 @@ export class InMemoryPaymentVerifier {
   public constructor(
     private readonly maxProofAgeMs: number,
     private readonly paymentInspector?: StellarPaymentInspector,
+    private readonly facilitator?: X402FacilitatorClient,
   ) {}
 
   public async verify(
@@ -99,16 +101,60 @@ export class InMemoryPaymentVerifier {
       }
     }
 
-    if (hasTxHashProof && this.paymentInspector) {
-      const inspection = await this.paymentInspector.inspect(
-        proof.txHash!,
-        now,
-        expected.minAmountStroops,
-      );
-      if (!inspection.ok) {
+    if (hasTxHashProof) {
+      const reasonChain: string[] = [];
+
+      if (this.facilitator?.isEnabled()) {
+        const facilitatorResult = await this.facilitator.verifyTx({
+          txHash: proof.txHash!,
+          operationId: expected.operationId,
+          resource: expected.resource,
+          minAmountStroops: expected.minAmountStroops,
+        });
+        if (facilitatorResult.ok) {
+          // Facilitator attestation is sufficient for txHash-based proofs.
+        } else {
+          reasonChain.push(`FACILITATOR:${facilitatorResult.reason ?? "REJECTED"}`);
+          if (this.paymentInspector) {
+            const inspection = await this.paymentInspector.inspect(
+              proof.txHash!,
+              now,
+              expected.minAmountStroops,
+            );
+            if (!inspection.ok) {
+              reasonChain.push(`INSPECTOR:${inspection.reason ?? "UNVERIFIED_TX"}`);
+              throw new GatewayError(
+                "INVALID_PAYMENT_PROOF",
+                `Transaction proof invalid: ${reasonChain.join(" -> ")}`,
+                402,
+              );
+            }
+          } else {
+            reasonChain.push("INSPECTOR:UNAVAILABLE");
+            throw new GatewayError(
+              "INVALID_PAYMENT_PROOF",
+              `Transaction proof invalid: ${reasonChain.join(" -> ")}`,
+              402,
+            );
+          }
+        }
+      } else if (this.paymentInspector) {
+        const inspection = await this.paymentInspector.inspect(
+          proof.txHash!,
+          now,
+          expected.minAmountStroops,
+        );
+        if (!inspection.ok) {
+          throw new GatewayError(
+            "INVALID_PAYMENT_PROOF",
+            `Transaction proof invalid: ${inspection.reason ?? "UNVERIFIED_TX"}`,
+            402,
+          );
+        }
+      } else {
         throw new GatewayError(
           "INVALID_PAYMENT_PROOF",
-          `Transaction proof invalid: ${inspection.reason ?? "UNVERIFIED_TX"}`,
+          "Transaction proof invalid: FACILITATOR:DISABLED -> INSPECTOR:UNAVAILABLE",
           402,
         );
       }
