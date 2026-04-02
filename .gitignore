@@ -14,3 +14,4 @@ apps/_backups/
 contracts/target/
 contracts/artifacts/
 contracts/cache/    
+contracts/*/test_snapshots/

@@ -217,51 +217,49 @@ mod tests {
     #[test]
     fn register_and_get_happy_path() {
         let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &contract_id);
+
         let admin = Address::generate(&env);
         let owner = Address::generate(&env);
-        let contract_id = BytesN::from_array(&env, &[7_u8; 32]);
-        let name = String::from_str(&env, "Example Contract");
-        let endpoint = String::from_str(&env, "https://example.dev/tool");
-        let price_stroops = 1_000_i128;
-
-        let registry_id = env.register(RegistryContract, ());
-        let client = RegistryContractClient::new(&env, &registry_id);
+        let listed_contract_id = BytesN::from_array(&env, &[7_u8; 32]);
+        let name = String::from_str(&env, "Echo");
+        let endpoint = String::from_str(&env, "https://api.synapse.test/echo");
 
         client.init(&admin);
-        client.register(
-            &owner,
-            &contract_id,
-            &name,
-            &endpoint,
-            &price_stroops,
-        );
+        client.register(&owner, &listed_contract_id, &name, &endpoint, &100_i128);
 
-        let got = client.get(&contract_id);
-        assert_eq!(got.contract_id, contract_id);
-        assert_eq!(got.owner, owner);
-        assert_eq!(got.name, name);
-        assert_eq!(got.endpoint, endpoint);
-        assert_eq!(got.price_stroops, price_stroops);
-        assert!(got.active);
-        assert_eq!(got.total_calls, 0);
-        assert_eq!(got.successful_calls, 0);
+        let listing = client.get(&listed_contract_id);
+        assert_eq!(listing.contract_id, listed_contract_id);
+        assert_eq!(listing.owner, owner);
+        assert_eq!(listing.name, name);
+        assert_eq!(listing.endpoint, endpoint);
+        assert_eq!(listing.price_stroops, 100_i128);
+        assert!(listing.active);
+        assert_eq!(listing.total_calls, 0_u64);
+        assert_eq!(listing.successful_calls, 0_u64);
     }
 
     #[test]
     fn reputation_defaults_to_500_when_no_calls() {
         let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &contract_id);
+
         let admin = Address::generate(&env);
         let owner = Address::generate(&env);
-        let contract_id = BytesN::from_array(&env, &[8_u8; 32]);
-        let name = String::from_str(&env, "No Calls Yet");
-        let endpoint = String::from_str(&env, "https://example.dev/no-calls");
-
-        let registry_id = env.register(RegistryContract, ());
-        let client = RegistryContractClient::new(&env, &registry_id);
+        let listed_contract_id = BytesN::from_array(&env, &[9_u8; 32]);
+        let name = String::from_str(&env, "Compute");
+        let endpoint = String::from_str(&env, "https://api.synapse.test/compute");
 
         client.init(&admin);
-        client.register(&owner, &contract_id, &name, &endpoint, &10_i128);
+        client.register(&owner, &listed_contract_id, &name, &endpoint, &250_i128);
 
-        assert_eq!(client.reputation(&contract_id), 500);
+        let score = client.reputation(&listed_contract_id);
+        assert_eq!(score, 500_u32);
     }
 }

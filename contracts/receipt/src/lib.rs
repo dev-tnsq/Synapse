@@ -125,17 +125,20 @@ fn read_admin(env: &Env) -> Address {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::Address as _, Address, Env};
 
     #[test]
     fn placeholder_receipt_test() {
         let env = Env::default();
-        let admin = Address::generate(&env);
+        env.mock_all_auths();
 
-        let contract_id = env.register(ReceiptContract, ());
+        let contract_id = env.register_contract(None, ReceiptContract);
         let client = ReceiptContractClient::new(&env, &contract_id);
 
+        let admin = Address::generate(&env);
         client.init(&admin);
-        assert_eq!(client.admin(), admin);
+
+        let current_admin = client.admin();
+        assert_eq!(current_admin, admin);
     }
 }
