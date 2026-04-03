@@ -10,6 +10,26 @@ const registerOptionsSchema = z.object({
   basePath: z.string().min(1)
 });
 
+type JsonRecord = Record<string, unknown>;
+
+type GatewayAbiFunctionParam = {
+  name: string;
+  type: string;
+};
+
+type GatewayAbiFunction = {
+  name: string;
+  inputs: GatewayAbiFunctionParam[];
+  outputs: GatewayAbiFunctionParam[];
+  readonly: boolean;
+  payable: boolean;
+  doc?: string;
+};
+
+type GatewayAbi = {
+  functions: GatewayAbiFunction[];
+};
+
 function normalizeGateway(gateway: string): string {
   return gateway.replace(/\/+$/, '');
 }
@@ -20,6 +40,128 @@ function toJson(value: string): unknown {
   } catch {
     throw new Error('ABI file must contain valid JSON');
   }
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null;
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === 'undefined') {
+    return 'undefined';
+  }
+
+  const serialized = JSON.stringify(value);
+  return typeof serialized === 'string' ? serialized : String(value);
+}
+
+function deriveSorobanType(node: unknown): string {
+  if (typeof node === 'string') {
+    return node;
+  }
+
+  if (!isRecord(node)) {
+    return stringifyUnknown(node);
+  }
+
+  const tag = node.type;
+  if (typeof tag !== 'string') {
+    return stringifyUnknown(node);
+  }
+
+  switch (tag) {
+    case 'bytesN': {
+      const n = node.n;
+      if (typeof n === 'number' && Number.isFinite(n)) {
+        return `bytesN<${n}>`;
+      }
+      return 'bytesN';
+    }
+    case 'vec':
+      return `vec<${deriveSorobanType(node.element)}>`;
+    case 'map':
+      return `map<${deriveSorobanType(node.key)}, ${deriveSorobanType(node.value)}>`;
+    case 'option':
+      return `option<${deriveSorobanType(node.value)}>`;
+    case 'tuple': {
+      const elements = Array.isArray(node.elements) ? node.elements : [];
+      const rendered = elements.map((element) => deriveSorobanType(element)).join(', ');
+      return `tuple<${rendered}>`;
+    }
+    case 'result':
+      return `result<${deriveSorobanType(node.ok)}, ${deriveSorobanType(node.error)}>`;
+    case 'custom': {
+      const name = node.name;
+      if (typeof name === 'string' && name.trim().length > 0) {
+        return `custom<${name}>`;
+      }
+      return 'custom';
+    }
+    default:
+      return stringifyUnknown(node);
+  }
+}
+
+function convertSorobanFunction(entry: unknown): GatewayAbiFunction | undefined {
+  if (!isRecord(entry) || entry.type !== 'function') {
+    return undefined;
+  }
+
+  const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+  if (name.length === 0) {
+    return undefined;
+  }
+
+  const inputNodes = Array.isArray(entry.inputs) ? entry.inputs : [];
+  const outputNodes = Array.isArray(entry.outputs) ? entry.outputs : [];
+
+  const inputs = inputNodes.map((inputNode, index) => {
+    const asInput = isRecord(inputNode) ? inputNode : {};
+    const inputName =
+      typeof asInput.name === 'string' && asInput.name.trim().length > 0 ? asInput.name : `arg${index}`;
+    const typeNode = Object.prototype.hasOwnProperty.call(asInput, 'value') ? asInput.value : asInput.type;
+
+    return {
+      name: inputName,
+      type: deriveSorobanType(typeNode)
+    };
+  });
+
+  const outputs = outputNodes.map((outputNode, index) => ({
+    name: `out${index}`,
+    type: deriveSorobanType(outputNode)
+  }));
+
+  const doc = typeof entry.doc === 'string' ? entry.doc.trim() : '';
+
+  return {
+    name,
+    inputs,
+    outputs,
+    readonly: /^(get|list|reputation|admin)$/i.test(name),
+    payable: false,
+    ...(doc.length > 0 ? { doc } : {})
+  };
+}
+
+function isGatewayNativeAbi(abi: unknown): abi is GatewayAbi {
+  return isRecord(abi) && Array.isArray(abi.functions);
+}
+
+function normalizeAbiForRegister(abi: unknown): unknown {
+  if (isGatewayNativeAbi(abi)) {
+    return abi;
+  }
+
+  if (!Array.isArray(abi)) {
+    return abi;
+  }
+
+  const functions = abi
+    .map((entry) => convertSorobanFunction(entry))
+    .filter((entry): entry is GatewayAbiFunction => typeof entry !== 'undefined');
+
+  return { functions };
 }
 
 function extractOperationIds(body: unknown): string[] {
@@ -81,7 +223,7 @@ async function registerContract(rawOptions: {
   const registerUrl = `${gateway}/api/v1/contracts/register`;
 
   const abiRaw = await readFile(options.abiFile, 'utf8');
-  const abi = toJson(abiRaw);
+  const abi = normalizeAbiForRegister(toJson(abiRaw));
 
   const response = await fetch(registerUrl, {
     method: 'POST',

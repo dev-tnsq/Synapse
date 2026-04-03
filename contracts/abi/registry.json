@@ -1,0 +1,327 @@
+[
+  {
+    "type": "function",
+    "doc": "",
+    "name": "get",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "type": "custom",
+        "name": "ContractListing"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "init",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "admin",
+        "value": {
+          "type": "address"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "list",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "offset",
+        "value": {
+          "type": "u32"
+        }
+      },
+      {
+        "doc": "",
+        "name": "limit",
+        "value": {
+          "type": "u32"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "type": "vec",
+        "element": {
+          "type": "custom",
+          "name": "ContractListing"
+        }
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "register",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "owner",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "name",
+        "value": {
+          "type": "string"
+        }
+      },
+      {
+        "doc": "",
+        "name": "endpoint",
+        "value": {
+          "type": "string"
+        }
+      },
+      {
+        "doc": "",
+        "name": "price_stroops",
+        "value": {
+          "type": "i128"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "union",
+    "doc": "",
+    "name": "DataKey",
+    "cases": [
+      {
+        "doc": "",
+        "name": "Admin",
+        "values": []
+      },
+      {
+        "doc": "",
+        "name": "Listing",
+        "values": [
+          {
+            "type": "bytesN",
+            "n": 32
+          }
+        ]
+      },
+      {
+        "doc": "",
+        "name": "Index",
+        "values": [
+          {
+            "type": "u32"
+          }
+        ]
+      },
+      {
+        "doc": "",
+        "name": "Count",
+        "values": []
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "reputation",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "type": "u32"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "set_active",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "active",
+        "value": {
+          "type": "bool"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "enum",
+    "doc": "",
+    "name": "RegistryError",
+    "cases": [
+      {
+        "doc": "",
+        "name": "AlreadyInitialized",
+        "value": 1
+      },
+      {
+        "doc": "",
+        "name": "Unauthorized",
+        "value": 2
+      },
+      {
+        "doc": "",
+        "name": "NotInitialized",
+        "value": 3
+      },
+      {
+        "doc": "",
+        "name": "InvalidPrice",
+        "value": 4
+      },
+      {
+        "doc": "",
+        "name": "ContractAlreadyRegistered",
+        "value": 5
+      },
+      {
+        "doc": "",
+        "name": "ContractNotFound",
+        "value": 6
+      },
+      {
+        "doc": "",
+        "name": "Overflow",
+        "value": 7
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "record_invocation",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "success",
+        "value": {
+          "type": "bool"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "struct",
+    "doc": "",
+    "name": "ContractListing",
+    "fields": [
+      {
+        "doc": "",
+        "name": "active",
+        "value": {
+          "type": "bool"
+        }
+      },
+      {
+        "doc": "",
+        "name": "contract_id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "endpoint",
+        "value": {
+          "type": "string"
+        }
+      },
+      {
+        "doc": "",
+        "name": "name",
+        "value": {
+          "type": "string"
+        }
+      },
+      {
+        "doc": "",
+        "name": "owner",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "price_stroops",
+        "value": {
+          "type": "i128"
+        }
+      },
+      {
+        "doc": "",
+        "name": "registered_at",
+        "value": {
+          "type": "u64"
+        }
+      },
+      {
+        "doc": "",
+        "name": "successful_calls",
+        "value": {
+          "type": "u64"
+        }
+      },
+      {
+        "doc": "",
+        "name": "total_calls",
+        "value": {
+          "type": "u64"
+        }
+      }
+    ]
+  }
+]

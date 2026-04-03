@@ -1,0 +1,218 @@
+[
+  {
+    "type": "function",
+    "doc": "",
+    "name": "get",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "type": "option",
+        "value": {
+          "type": "custom",
+          "name": "Receipt"
+        }
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "init",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "admin",
+        "value": {
+          "type": "address"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "admin",
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "issue",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "id",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "payer",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "payee",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "token",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "amount",
+        "value": {
+          "type": "i128"
+        }
+      },
+      {
+        "doc": "",
+        "name": "result_hash",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "doc": "",
+    "name": "set_admin",
+    "inputs": [
+      {
+        "doc": "",
+        "name": "new_admin",
+        "value": {
+          "type": "address"
+        }
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "union",
+    "doc": "",
+    "name": "DataKey",
+    "cases": [
+      {
+        "doc": "",
+        "name": "Admin",
+        "values": []
+      },
+      {
+        "doc": "",
+        "name": "Receipt",
+        "values": [
+          {
+            "type": "bytesN",
+            "n": 32
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "doc": "",
+    "name": "Receipt",
+    "fields": [
+      {
+        "doc": "",
+        "name": "amount",
+        "value": {
+          "type": "i128"
+        }
+      },
+      {
+        "doc": "",
+        "name": "ledger",
+        "value": {
+          "type": "u32"
+        }
+      },
+      {
+        "doc": "",
+        "name": "payee",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "payer",
+        "value": {
+          "type": "address"
+        }
+      },
+      {
+        "doc": "",
+        "name": "result_hash",
+        "value": {
+          "type": "bytesN",
+          "n": 32
+        }
+      },
+      {
+        "doc": "",
+        "name": "token",
+        "value": {
+          "type": "address"
+        }
+      }
+    ]
+  },
+  {
+    "type": "enum",
+    "doc": "",
+    "name": "ReceiptError",
+    "cases": [
+      {
+        "doc": "",
+        "name": "AlreadyInitialized",
+        "value": 1
+      },
+      {
+        "doc": "",
+        "name": "Unauthorized",
+        "value": 2
+      },
+      {
+        "doc": "",
+        "name": "InvalidAmount",
+        "value": 3
+      },
+      {
+        "doc": "",
+        "name": "ReceiptExists",
+        "value": 4
+      }
+    ]
+  }
+]
