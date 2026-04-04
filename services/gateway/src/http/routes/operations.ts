@@ -37,6 +37,29 @@ export interface OperationsRouteDependencies {
   readonly execute: (invocation: CanonicalOperationInvocation) => Promise<JsonValue>;
 }
 
+type StellarNetwork = "testnet" | "mainnet" | "custom";
+
+export function networkFromPassphrase(passphrase: string): StellarNetwork {
+  if (passphrase.includes("Test SDF Network")) {
+    return "testnet";
+  }
+  if (passphrase.includes("Public Global Stellar Network")) {
+    return "mainnet";
+  }
+  return "custom";
+}
+
+export function buildExplorerBase(network: StellarNetwork): string {
+  switch (network) {
+    case "testnet":
+      return "https://stellar.expert/explorer/testnet";
+    case "mainnet":
+      return "https://stellar.expert/explorer/public";
+    default:
+      return "";
+  }
+}
+
 function mapErrorStatus(error: CanonicalFailure): number {
   switch (error.error.code) {
     case "OPERATION_NOT_FOUND":
@@ -327,6 +350,52 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
         });
         return true;
       }
+    }
+
+    if (method === "GET" && path === "/api/v1/discovery/contracts") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const explorerBase = buildExplorerBase(network);
+      const grouped = new Map<string, CanonicalOperationSpec[]>();
+
+      for (const operation of deps.registry.list()) {
+        const existing = grouped.get(operation.contractId);
+        if (existing) {
+          existing.push(operation);
+        } else {
+          grouped.set(operation.contractId, [operation]);
+        }
+      }
+
+      const contracts = Array.from(grouped.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([contractId, operations]) => {
+          const sortedOperations = [...operations].sort((left, right) => left.id.localeCompare(right.id));
+          const prices = sortedOperations.map((operation) => operation.priceStroops);
+
+          return {
+            contractId,
+            ...(explorerBase ? { contractExplorerUrl: explorerBase + "/contract/" + contractId } : {}),
+            paidOperations: sortedOperations.filter((operation) => operation.paymentRequired).length,
+            freeOperations: sortedOperations.filter((operation) => !operation.paymentRequired).length,
+            minPriceStroops: prices.length > 0 ? Math.min(...prices) : 0,
+            maxPriceStroops: prices.length > 0 ? Math.max(...prices) : 0,
+            operations: sortedOperations.map((operation) => ({
+              id: operation.id,
+              functionName: operation.functionName,
+              method: operation.method,
+              path: operation.path,
+              paymentRequired: operation.paymentRequired,
+              priceStroops: operation.priceStroops,
+            })),
+          };
+        });
+
+      sendJson(res, 200, {
+        network,
+        generatedAt: Date.now(),
+        contracts,
+      });
+      return true;
     }
 
     const operation = deps.registry.getByRoute(method as "GET" | "POST", path);
