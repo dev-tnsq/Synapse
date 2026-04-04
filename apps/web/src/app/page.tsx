@@ -17,9 +17,9 @@ type ManifestPaymentDefaults = {
 
 type ManifestLatestProof = {
   file: string;
-  paymentChallengeStatus: number;
-  invokeHttpStatus: number;
-  txHash: string;
+  paymentChallengeStatus: number | null;
+  invokeHttpStatus: number | null;
+  txHash: string | null;
 };
 
 type ManifestProof = {
@@ -46,6 +46,22 @@ type Manifest = {
 type Health = {
   status?: string;
   network?: string;
+};
+
+type DiscoveryProof = {
+  file: string;
+  generatedAt: number;
+  paymentChallengeStatus: number | null;
+  invokeHttpStatus: number | null;
+  txHash: string | null;
+  proofTxExplorerUrl?: string;
+};
+
+type DiscoveryProofsResponse = {
+  network: string;
+  generatedAt: number;
+  availableProofs: number;
+  proofs: DiscoveryProof[];
 };
 
 const gatewayBaseUrl =
@@ -76,10 +92,19 @@ function truncateMiddle(value: string, keep = 8): string {
   return `${value.slice(0, keep)}...${value.slice(-keep)}`;
 }
 
+function formatGenerated(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "-";
+  }
+
+  return new Date(seconds * 1000).toLocaleString();
+}
+
 export default async function Home() {
-  const [manifest, health] = await Promise.all([
+  const [manifest, health, proofs] = await Promise.all([
     fetchJson<Manifest>("/api/v1/discovery/manifest"),
     fetchJson<Health>("/health"),
+    fetchJson<DiscoveryProofsResponse>("/api/v1/discovery/proofs?limit=6"),
   ]);
 
   const inlineErrors = [
@@ -87,12 +112,14 @@ export default async function Home() {
       ? `manifest: ${manifest.error} (/api/v1/discovery/manifest)`
       : null,
     health.error ? `health: ${health.error} (/health)` : null,
+    proofs.error ? `proofs: ${proofs.error} (/api/v1/discovery/proofs?limit=6)` : null,
   ].filter(Boolean) as string[];
 
   const network = manifest.data?.network ?? health.data?.network ?? "unknown";
   const summary = manifest.data?.summary;
   const proof = manifest.data?.proof;
   const latestProof = proof?.latestProof;
+  const recentProofs = proofs.data?.proofs ?? [];
   const contracts = manifest.data?.contracts ?? [];
 
   return (
@@ -146,20 +173,75 @@ export default async function Home() {
             </div>
             <div>
               <dt>challenge</dt>
-              <dd>{latestProof.paymentChallengeStatus}</dd>
+              <dd>{latestProof.paymentChallengeStatus ?? "-"}</dd>
             </div>
             <div>
               <dt>invoke</dt>
-              <dd>{latestProof.invokeHttpStatus}</dd>
+              <dd>{latestProof.invokeHttpStatus ?? "-"}</dd>
             </div>
             <div>
               <dt>tx</dt>
-              <dd>{truncateMiddle(latestProof.txHash, 10)}</dd>
+              <dd>{latestProof.txHash ? truncateMiddle(latestProof.txHash, 10) : "-"}</dd>
             </div>
           </dl>
         ) : (
           <p className="empty-line">no proof available</p>
         )}
+      </section>
+
+      <section className="card" aria-label="recent proofs">
+        <div className="card-head">
+          <h2 className="card-title">recent proofs</h2>
+          <p className="card-meta">latest 6</p>
+        </div>
+        <div className="contract-table-wrap">
+          <table className="contract-table">
+            <thead>
+              <tr>
+                <th>file</th>
+                <th>generated</th>
+                <th>challenge</th>
+                <th>invoke</th>
+                <th>tx</th>
+                <th>explorer</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proofs.error ? (
+                <tr>
+                  <td colSpan={6} className="empty-line">
+                    failed to load proofs: {proofs.error}
+                  </td>
+                </tr>
+              ) : recentProofs.length > 0 ? (
+                recentProofs.map((entry) => (
+                  <tr key={entry.file}>
+                    <td title={entry.file}>{entry.file}</td>
+                    <td>{formatGenerated(entry.generatedAt)}</td>
+                    <td>{entry.paymentChallengeStatus ?? "-"}</td>
+                    <td>{entry.invokeHttpStatus ?? "-"}</td>
+                    <td>{entry.txHash ? truncateMiddle(entry.txHash, 8) : "-"}</td>
+                    <td>
+                      {entry.proofTxExplorerUrl ? (
+                        <a href={entry.proofTxExplorerUrl} target="_blank" rel="noreferrer">
+                          open
+                        </a>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="empty-line">
+                    no recent proofs
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="card" aria-label="contracts">

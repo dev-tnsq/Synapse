@@ -92,19 +92,35 @@ function isExistingDirectory(directoryPath: string): boolean {
   }
 }
 
-function loadLatestProofSummary(explorerBase: string): {
+type ParsedProofArtifact = {
+  file: string;
+  generatedAt: number;
+  paymentChallengeStatus: number | null;
+  invokeHttpStatus: number | null;
+  txHash: string | null;
+  registryContractId: string | null;
+  receiptContractId: string | null;
+  proofTxExplorerUrl?: string;
+};
+
+function parseProofLimit(rawLimit: string | null): number {
+  if (typeof rawLimit !== "string") {
+    return 10;
+  }
+
+  const parsed = Number.parseInt(rawLimit, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 10;
+  }
+
+  return Math.min(parsed, 50);
+}
+
+function loadProofHistory(explorerBase: string, limit: number): {
   availableProofs: number;
-  latestProof?: {
-    file: string;
-    generatedAt: number;
-    invokeHttpStatus: number | null;
-    paymentChallengeStatus: number | null;
-    txHash: string | null;
-    registryContractId: string | null;
-    receiptContractId: string | null;
-    proofTxExplorerUrl?: string;
-  };
+  proofs: ParsedProofArtifact[];
 } {
+  const safeLimit = Math.max(1, Math.min(limit, 50));
   const proofDirectory = getProofDirectory();
   const proofNamePattern = /^e2e-proof\.(\d+)\.json$/;
 
@@ -124,32 +140,81 @@ function loadLatestProofSummary(explorerBase: string): {
       .filter((entry): entry is { file: string; generatedAt: number } => entry !== null)
       .sort((left, right) => right.generatedAt - left.generatedAt);
 
-    if (proofFiles.length === 0) {
-      return { availableProofs: 0 };
-    }
+    const proofs = proofFiles.slice(0, safeLimit).map((proofFile) => {
+      const proofFilePath = path.join(proofDirectory, proofFile.file);
 
-    const latest = proofFiles[0];
-    const latestFilePath = path.join(proofDirectory, latest.file);
-    const parsed = JSON.parse(readFileSync(latestFilePath, "utf8")) as Record<string, unknown>;
-    const txHash = typeof parsed.txHash === "string" ? parsed.txHash : null;
+      try {
+        const parsed = JSON.parse(readFileSync(proofFilePath, "utf8")) as Record<string, unknown>;
+        const txHash = typeof parsed.txHash === "string" ? parsed.txHash : null;
+
+        return {
+          file: path.basename(proofFile.file),
+          generatedAt: proofFile.generatedAt,
+          paymentChallengeStatus:
+            typeof parsed.paymentChallengeStatus === "number" ? parsed.paymentChallengeStatus : null,
+          invokeHttpStatus: typeof parsed.invokeHttpStatus === "number" ? parsed.invokeHttpStatus : null,
+          txHash,
+          registryContractId:
+            typeof parsed.registryContractId === "string" ? parsed.registryContractId : null,
+          receiptContractId:
+            typeof parsed.receiptContractId === "string" ? parsed.receiptContractId : null,
+          ...(explorerBase && txHash ? { proofTxExplorerUrl: explorerBase + "/tx/" + txHash } : {}),
+        };
+      } catch {
+        return {
+          file: path.basename(proofFile.file),
+          generatedAt: proofFile.generatedAt,
+          paymentChallengeStatus: null,
+          invokeHttpStatus: null,
+          txHash: null,
+          registryContractId: null,
+          receiptContractId: null,
+        };
+      }
+    });
 
     return {
       availableProofs: proofFiles.length,
-      latestProof: {
-        file: path.basename(latest.file),
-        generatedAt: latest.generatedAt,
-        invokeHttpStatus: typeof parsed.invokeHttpStatus === "number" ? parsed.invokeHttpStatus : null,
-        paymentChallengeStatus:
-          typeof parsed.paymentChallengeStatus === "number" ? parsed.paymentChallengeStatus : null,
-        txHash,
-        registryContractId: typeof parsed.registryContractId === "string" ? parsed.registryContractId : null,
-        receiptContractId: typeof parsed.receiptContractId === "string" ? parsed.receiptContractId : null,
-        ...(explorerBase && txHash ? { proofTxExplorerUrl: explorerBase + "/tx/" + txHash } : {}),
-      },
+      proofs,
     };
   } catch {
+    return { availableProofs: 0, proofs: [] };
+  }
+}
+
+function loadLatestProofSummary(explorerBase: string): {
+  availableProofs: number;
+  latestProof?: {
+    file: string;
+    generatedAt: number;
+    invokeHttpStatus: number | null;
+    paymentChallengeStatus: number | null;
+    txHash: string | null;
+    registryContractId: string | null;
+    receiptContractId: string | null;
+    proofTxExplorerUrl?: string;
+  };
+} {
+  const proofHistory = loadProofHistory(explorerBase, 1);
+  const latest = proofHistory.proofs[0];
+
+  if (!latest) {
     return { availableProofs: 0 };
   }
+
+  return {
+    availableProofs: proofHistory.availableProofs,
+    latestProof: {
+      file: latest.file,
+      generatedAt: latest.generatedAt,
+      invokeHttpStatus: latest.invokeHttpStatus,
+      paymentChallengeStatus: latest.paymentChallengeStatus,
+      txHash: latest.txHash,
+      registryContractId: latest.registryContractId,
+      receiptContractId: latest.receiptContractId,
+      ...(latest.proofTxExplorerUrl ? { proofTxExplorerUrl: latest.proofTxExplorerUrl } : {}),
+    },
+  };
 }
 
 type DiscoveryPaymentConfig = Pick<OperationsRouteDependencies["paymentConfig"], "networkPassphrase" | "payToAddress">;
@@ -531,6 +596,28 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
         network,
         generatedAt: Date.now(),
         operations,
+      });
+      return true;
+    }
+
+    if (method === "GET" && path === "/api/v1/discovery/proofs") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const explorerBase = buildExplorerBase(network);
+      const limit = parseProofLimit(url.searchParams.get("limit"));
+      const proofHistory = loadProofHistory(explorerBase, limit);
+
+      sendJson(res, 200, {
+        network,
+        generatedAt: Date.now(),
+        availableProofs: proofHistory.availableProofs,
+        proofs: proofHistory.proofs.map((proof) => ({
+          file: proof.file,
+          generatedAt: proof.generatedAt,
+          paymentChallengeStatus: proof.paymentChallengeStatus,
+          invokeHttpStatus: proof.invokeHttpStatus,
+          txHash: proof.txHash,
+          ...(proof.proofTxExplorerUrl ? { proofTxExplorerUrl: proof.proofTxExplorerUrl } : {}),
+        })),
       });
       return true;
     }
