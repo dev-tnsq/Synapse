@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
 import { URL } from "node:url";
 
 import {
@@ -57,6 +59,96 @@ export function buildExplorerBase(network: StellarNetwork): string {
       return "https://stellar.expert/explorer/public";
     default:
       return "";
+  }
+}
+
+function getProofDirectory(): string {
+  const configured = process.env.GATEWAY_PROOF_DIR;
+  if (typeof configured === "string" && configured.trim().length > 0) {
+    const configuredPath = configured.trim();
+    if (isExistingDirectory(configuredPath)) {
+      return configuredPath;
+    }
+  }
+
+  const candidateA = path.resolve(process.cwd(), "contracts", "target");
+  const candidateB = path.resolve(process.cwd(), "..", "..", "contracts", "target");
+
+  if (isExistingDirectory(candidateA)) {
+    return candidateA;
+  }
+  if (isExistingDirectory(candidateB)) {
+    return candidateB;
+  }
+
+  return candidateA;
+}
+
+function isExistingDirectory(directoryPath: string): boolean {
+  try {
+    return statSync(directoryPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function loadLatestProofSummary(explorerBase: string): {
+  availableProofs: number;
+  latestProof?: {
+    file: string;
+    generatedAt: number;
+    invokeHttpStatus: number | null;
+    paymentChallengeStatus: number | null;
+    txHash: string | null;
+    registryContractId: string | null;
+    receiptContractId: string | null;
+    proofTxExplorerUrl?: string;
+  };
+} {
+  const proofDirectory = getProofDirectory();
+  const proofNamePattern = /^e2e-proof\.(\d+)\.json$/;
+
+  try {
+    const proofFiles = readdirSync(proofDirectory)
+      .map((file) => {
+        const match = proofNamePattern.exec(file);
+        if (!match) {
+          return null;
+        }
+
+        return {
+          file,
+          generatedAt: Number(match[1]),
+        };
+      })
+      .filter((entry): entry is { file: string; generatedAt: number } => entry !== null)
+      .sort((left, right) => right.generatedAt - left.generatedAt);
+
+    if (proofFiles.length === 0) {
+      return { availableProofs: 0 };
+    }
+
+    const latest = proofFiles[0];
+    const latestFilePath = path.join(proofDirectory, latest.file);
+    const parsed = JSON.parse(readFileSync(latestFilePath, "utf8")) as Record<string, unknown>;
+    const txHash = typeof parsed.txHash === "string" ? parsed.txHash : null;
+
+    return {
+      availableProofs: proofFiles.length,
+      latestProof: {
+        file: path.basename(latest.file),
+        generatedAt: latest.generatedAt,
+        invokeHttpStatus: typeof parsed.invokeHttpStatus === "number" ? parsed.invokeHttpStatus : null,
+        paymentChallengeStatus:
+          typeof parsed.paymentChallengeStatus === "number" ? parsed.paymentChallengeStatus : null,
+        txHash,
+        registryContractId: typeof parsed.registryContractId === "string" ? parsed.registryContractId : null,
+        receiptContractId: typeof parsed.receiptContractId === "string" ? parsed.receiptContractId : null,
+        ...(explorerBase && txHash ? { proofTxExplorerUrl: explorerBase + "/tx/" + txHash } : {}),
+      },
+    };
+  } catch {
+    return { availableProofs: 0 };
   }
 }
 
@@ -449,6 +541,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
       const explorerBase = buildExplorerBase(network);
       const contracts = buildContractDiscovery(deps.registry, network, explorerBase);
       const operations = buildOperationDiscovery(deps.registry, deps.paymentConfig);
+      const proof = loadLatestProofSummary(explorerBase);
       const paidOperations = operations.filter((operation) => operation.paymentRequired).length;
       const freeOperations = operations.length - paidOperations;
 
@@ -468,6 +561,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
         },
         contracts,
         operations,
+        proof,
       });
       return true;
     }
