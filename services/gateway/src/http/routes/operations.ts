@@ -398,6 +398,34 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
       return true;
     }
 
+    if (method === "GET" && path === "/api/v1/discovery/operations") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const operations = [...deps.registry.list()]
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((operation) => ({
+          id: operation.id,
+          contractId: operation.contractId,
+          functionName: operation.functionName,
+          method: operation.method,
+          path: operation.path,
+          paymentRequired: operation.paymentRequired,
+          priceStroops: operation.priceStroops,
+          payment: {
+            challengeRequired: operation.paymentRequired,
+            minAmountStroops: operation.priceStroops,
+            payToAddress: deps.paymentConfig.payToAddress,
+            networkPassphrase: deps.paymentConfig.networkPassphrase,
+          },
+        }));
+
+      sendJson(res, 200, {
+        network,
+        generatedAt: Date.now(),
+        operations,
+      });
+      return true;
+    }
+
     const operation = deps.registry.getByRoute(method as "GET" | "POST", path);
     if (!operation) {
       return false;
