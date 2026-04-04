@@ -3,7 +3,50 @@ type FetchState<T> = {
   error: string | null;
 };
 
-type JsonRecord = Record<string, unknown>;
+type ManifestSummary = {
+  contracts: number;
+  operations: number;
+  paidOperations: number;
+  freeOperations: number;
+};
+
+type ManifestPaymentDefaults = {
+  payToAddress: string;
+  challengeTtlSeconds: number;
+};
+
+type ManifestLatestProof = {
+  file: string;
+  paymentChallengeStatus: number;
+  invokeHttpStatus: number;
+  txHash: string;
+};
+
+type ManifestProof = {
+  availableProofs: number;
+  latestProof: ManifestLatestProof | null;
+};
+
+type ManifestContract = {
+  contractId: string;
+  paidOperations: number;
+  freeOperations: number;
+  minPriceStroops: number;
+  maxPriceStroops: number;
+};
+
+type Manifest = {
+  network: string;
+  summary: ManifestSummary;
+  paymentDefaults: ManifestPaymentDefaults;
+  proof: ManifestProof;
+  contracts: ManifestContract[];
+};
+
+type Health = {
+  status?: string;
+  network?: string;
+};
 
 const gatewayBaseUrl =
   process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8787";
@@ -15,144 +58,149 @@ async function fetchJson<T>(path: string): Promise<FetchState<T>> {
     });
 
     if (!response.ok) {
-      return {
-        data: null,
-        error: `${response.status} ${response.statusText}`,
-      };
+      return { data: null, error: `${response.status} ${response.statusText}` };
     }
 
-    const json = (await response.json()) as T;
-    return { data: json, error: null };
+    const data = (await response.json()) as T;
+    return { data, error: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "request failed";
-    return { data: null, error: message };
+    return {
+      data: null,
+      error: error instanceof Error ? error.message : "request failed",
+    };
   }
 }
 
-function summarizeOperations(data: unknown): string {
-  if (Array.isArray(data)) {
-    return `${data.length} tracked`;
-  }
-
-  if (data && typeof data === "object") {
-    const value = data as JsonRecord;
-
-    if (typeof value.total === "number") {
-      return `${value.total} tracked`;
-    }
-
-    if (Array.isArray(value.items)) {
-      return `${value.items.length} tracked`;
-    }
-  }
-
-  return "shape unknown";
-}
-
-function cardState(error: string | null, data: unknown): "ok" | "warn" | "bad" {
-  if (error) return "bad";
-  if (data == null) return "warn";
-  return "ok";
-}
-
-function stateLabel(state: "ok" | "warn" | "bad"): string {
-  if (state === "ok") return "online";
-  if (state === "warn") return "degraded";
-  return "error";
+function truncateMiddle(value: string, keep = 8): string {
+  if (value.length <= keep * 2 + 3) return value;
+  return `${value.slice(0, keep)}...${value.slice(-keep)}`;
 }
 
 export default async function Home() {
-  const [health, operations] = await Promise.all([
-    fetchJson<unknown>("/health"),
-    fetchJson<unknown>("/operations"),
+  const [manifest, health] = await Promise.all([
+    fetchJson<Manifest>("/api/v1/discovery/manifest"),
+    fetchJson<Health>("/health"),
   ]);
 
-  const contractsState = cardState(health.error, health.data);
-  const operationsState = cardState(operations.error, operations.data);
-  const paymentState = operations.error ? "bad" : "ok";
-  const settlementState = operations.error ? "warn" : "ok";
+  const inlineErrors = [
+    manifest.error
+      ? `manifest: ${manifest.error} (/api/v1/discovery/manifest)`
+      : null,
+    health.error ? `health: ${health.error} (/health)` : null,
+  ].filter(Boolean) as string[];
 
-  const healthSummary = health.error
-    ? `health unavailable: ${health.error}`
-    : "health endpoint reachable";
-
-  const operationsSummary = operations.error
-    ? `operations unavailable: ${operations.error}`
-    : summarizeOperations(operations.data);
+  const network = manifest.data?.network ?? health.data?.network ?? "unknown";
+  const summary = manifest.data?.summary;
+  const proof = manifest.data?.proof;
+  const latestProof = proof?.latestProof;
+  const contracts = manifest.data?.contracts ?? [];
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <h1 className="brand">synapse control plane</h1>
-        <p className="hint">gateway: {gatewayBaseUrl}</p>
+      <header className="top-strip" aria-label="gateway and network">
+        <span>gateway {gatewayBaseUrl}</span>
+        <span>network {network}</span>
       </header>
 
-      <section className="grid" aria-label="gateway status cards">
-        <article className="card">
-          <div className="card-title-row">
-            <h2 className="card-title">contracts</h2>
-            <span className={`status-pill status-${contractsState}`}>
-              {stateLabel(contractsState)}
-            </span>
-          </div>
-          <p className="metric">{healthSummary}</p>
-          <p className="subtle">source: /health</p>
-        </article>
+      {inlineErrors.length > 0 ? (
+        <p className="inline-error" role="status">
+          {inlineErrors.join(" | ")}
+        </p>
+      ) : null}
 
-        <article className="card">
-          <div className="card-title-row">
-            <h2 className="card-title">operations</h2>
-            <span className={`status-pill status-${operationsState}`}>
-              {stateLabel(operationsState)}
-            </span>
-          </div>
-          <p className="metric">{operationsSummary}</p>
-          <p className="subtle">source: /operations</p>
+      <section className="metric-row" aria-label="summary metrics">
+        <article className="mini-card">
+          <p className="mini-label">contracts</p>
+          <p className="mini-value">{summary?.contracts ?? "-"}</p>
         </article>
-
-        <article className="card">
-          <div className="card-title-row">
-            <h2 className="card-title">payment verification</h2>
-            <span className={`status-pill status-${paymentState}`}>
-              {stateLabel(paymentState)}
-            </span>
-          </div>
-          <p className="metric">
-            {operations.error
-              ? "unable to validate proofs"
-              : "verification checks passed"}
-          </p>
-          <p className="subtle">x402 proof channel visibility</p>
+        <article className="mini-card">
+          <p className="mini-label">operations</p>
+          <p className="mini-value">{summary?.operations ?? "-"}</p>
         </article>
-
-        <article className="card">
-          <div className="card-title-row">
-            <h2 className="card-title">settlement</h2>
-            <span className={`status-pill status-${settlementState}`}>
-              {stateLabel(settlementState)}
-            </span>
-          </div>
-          <p className="metric">
-            {operations.error
-              ? "settlement signal delayed"
-              : "on-chain settlement reporting active"}
-          </p>
-          <p className="subtle">stellar rail observability</p>
+        <article className="mini-card">
+          <p className="mini-label">paid</p>
+          <p className="mini-value">{summary?.paidOperations ?? "-"}</p>
+        </article>
+        <article className="mini-card">
+          <p className="mini-label">free</p>
+          <p className="mini-value">{summary?.freeOperations ?? "-"}</p>
+        </article>
+        <article className="mini-card">
+          <p className="mini-label">proofs</p>
+          <p className="mini-value">{proof?.availableProofs ?? "-"}</p>
         </article>
       </section>
 
-      <section className="card" aria-label="raw endpoint snapshots">
-        <h2 className="card-title">endpoint snapshots</h2>
-        <pre className="mono-block">
-          {JSON.stringify(
-            {
-              health,
-              operations,
-            },
-            null,
-            2,
-          )}
-        </pre>
+      <section className="card" aria-label="latest proof">
+        <div className="card-head">
+          <h2 className="card-title">latest proof</h2>
+          <p className="card-meta">
+            ttl {manifest.data?.paymentDefaults.challengeTtlSeconds ?? "-"}s
+          </p>
+        </div>
+        {latestProof ? (
+          <dl className="kv-grid">
+            <div>
+              <dt>file</dt>
+              <dd>{latestProof.file}</dd>
+            </div>
+            <div>
+              <dt>challenge</dt>
+              <dd>{latestProof.paymentChallengeStatus}</dd>
+            </div>
+            <div>
+              <dt>invoke</dt>
+              <dd>{latestProof.invokeHttpStatus}</dd>
+            </div>
+            <div>
+              <dt>tx</dt>
+              <dd>{truncateMiddle(latestProof.txHash, 10)}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="empty-line">no proof available</p>
+        )}
+      </section>
+
+      <section className="card" aria-label="contracts">
+        <div className="card-head">
+          <h2 className="card-title">contracts</h2>
+          <p className="card-meta">pay to {manifest.data?.paymentDefaults.payToAddress ?? "-"}</p>
+        </div>
+        <div className="contract-table-wrap">
+          <table className="contract-table">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>paid</th>
+                <th>free</th>
+                <th>price (stroops)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contracts.length > 0 ? (
+                contracts.map((contract) => (
+                  <tr key={contract.contractId}>
+                    <td title={contract.contractId}>
+                      {truncateMiddle(contract.contractId, 10)}
+                    </td>
+                    <td>{contract.paidOperations}</td>
+                    <td>{contract.freeOperations}</td>
+                    <td>
+                      {contract.minPriceStroops} - {contract.maxPriceStroops}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4} className="empty-line">
+                    no contracts available
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </main>
   );
