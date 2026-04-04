@@ -28,6 +28,8 @@ bash contracts/scripts/generate-abi.sh
 
 npm run -w tools/cli dev -- register --gateway http://localhost:8787 --contract-id <CONTRACT_ID> --abi-file <PATH_TO_ABI_JSON> --base-path /v1/ops
 
+When using auto-generated Soroban ABI specs through CLI conversion, non-readonly functions are registered as paid by default (100 stroops).
+
 ## Contract deploy flow
 
 Run the deployment script:

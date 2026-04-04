@@ -7,7 +7,8 @@ const registerOptionsSchema = z.object({
   gateway: z.string().url(),
   contractId: z.string().min(1),
   abiFile: z.string().min(1),
-  basePath: z.string().min(1)
+  basePath: z.string().min(1),
+  defaultPriceStroops: z.coerce.number().int().min(1).default(100)
 });
 
 type JsonRecord = Record<string, unknown>;
@@ -23,6 +24,7 @@ type GatewayAbiFunction = {
   outputs: GatewayAbiFunctionParam[];
   readonly: boolean;
   payable: boolean;
+  priceStroops: number;
   doc?: string;
 };
 
@@ -102,7 +104,7 @@ function deriveSorobanType(node: unknown): string {
   }
 }
 
-function convertSorobanFunction(entry: unknown): GatewayAbiFunction | undefined {
+function convertSorobanFunction(entry: unknown, defaultPriceStroops: number): GatewayAbiFunction | undefined {
   if (!isRecord(entry) || entry.type !== 'function') {
     return undefined;
   }
@@ -133,13 +135,15 @@ function convertSorobanFunction(entry: unknown): GatewayAbiFunction | undefined 
   }));
 
   const doc = typeof entry.doc === 'string' ? entry.doc.trim() : '';
+  const readonly = /^(get|list|reputation|admin)$/i.test(name);
 
   return {
     name,
     inputs,
     outputs,
-    readonly: /^(get|list|reputation|admin)$/i.test(name),
-    payable: false,
+    readonly,
+    payable: !readonly,
+    priceStroops: readonly ? 0 : defaultPriceStroops,
     ...(doc.length > 0 ? { doc } : {})
   };
 }
@@ -148,7 +152,7 @@ function isGatewayNativeAbi(abi: unknown): abi is GatewayAbi {
   return isRecord(abi) && Array.isArray(abi.functions);
 }
 
-function normalizeAbiForRegister(abi: unknown): unknown {
+function normalizeAbiForRegister(abi: unknown, defaultPriceStroops: number): unknown {
   if (isGatewayNativeAbi(abi)) {
     return abi;
   }
@@ -158,7 +162,7 @@ function normalizeAbiForRegister(abi: unknown): unknown {
   }
 
   const functions = abi
-    .map((entry) => convertSorobanFunction(entry))
+    .map((entry) => convertSorobanFunction(entry, defaultPriceStroops))
     .filter((entry): entry is GatewayAbiFunction => typeof entry !== 'undefined');
 
   return { functions };
@@ -217,13 +221,14 @@ async function registerContract(rawOptions: {
   contractId: string;
   abiFile: string;
   basePath: string;
+  defaultPriceStroops: number;
 }): Promise<void> {
   const options = registerOptionsSchema.parse(rawOptions);
   const gateway = normalizeGateway(options.gateway);
   const registerUrl = `${gateway}/api/v1/contracts/register`;
 
   const abiRaw = await readFile(options.abiFile, 'utf8');
-  const abi = normalizeAbiForRegister(toJson(abiRaw));
+  const abi = normalizeAbiForRegister(toJson(abiRaw), options.defaultPriceStroops);
 
   const response = await fetch(registerUrl, {
     method: 'POST',
@@ -274,12 +279,14 @@ async function main(): Promise<void> {
     .requiredOption('--contract-id <id>', 'Contract ID to register')
     .requiredOption('--abi-file <path>', 'Path to ABI JSON file')
     .option('--base-path <path>', 'Base path for generated operation routes', '/v1/ops')
+    .option('--default-price-stroops <n>', 'Default price for non-readonly functions', '100')
     .action(async (options) => {
       await registerContract(options as {
         gateway: string;
         contractId: string;
         abiFile: string;
         basePath: string;
+        defaultPriceStroops: number;
       });
     });
 

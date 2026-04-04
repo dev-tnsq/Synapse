@@ -48,9 +48,14 @@ GATEWAY_HORIZON_URL="${GATEWAY_HORIZON_URL:-https://horizon-testnet.stellar.org}
 GATEWAY_MAX_TX_AGE_MS="${GATEWAY_MAX_TX_AGE_MS:-600000}"
 GATEWAY_X402_FACILITATOR_URL="${GATEWAY_X402_FACILITATOR_URL:-https://example.invalid}"
 GATEWAY_IDEMPOTENCY_TTL_MS="${GATEWAY_IDEMPOTENCY_TTL_MS:-600000}"
+SKIP_DEPLOY="${SKIP_DEPLOY:-0}"
 
-echo "Running deploy script..."
-bash "${DEPLOY_SCRIPT}"
+if [[ "${SKIP_DEPLOY}" == "1" ]]; then
+  echo "Skipping deploy step (SKIP_DEPLOY=1)."
+else
+  echo "Running deploy script..."
+  bash "${DEPLOY_SCRIPT}"
+fi
 
 DEPLOYMENTS_FILE="${TARGET_DIR}/deployments.${SOROBAN_NETWORK}.json"
 if [[ ! -f "${DEPLOYMENTS_FILE}" ]]; then
@@ -83,6 +88,13 @@ fi
 
 GATEWAY_PAY_TO_ADDRESS="${GATEWAY_PAY_TO_ADDRESS:-${admin_address}}"
 GATEWAY_URL="http://${GATEWAY_HOST}:${GATEWAY_PORT}"
+
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -nP -iTCP:"${GATEWAY_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Error: Port ${GATEWAY_PORT} is already in use by another LISTEN process. Set a different GATEWAY_PORT and rerun." >&2
+    exit 1
+  fi
+fi
 
 gateway_log="${TARGET_DIR}/gateway-e2e.log"
 gateway_pid=""
@@ -159,9 +171,13 @@ fi
 set -e
 
 timestamp="$(date +%s)"
+challenge_tmp="$(mktemp)"
+challenge_status="$(curl -sS -o "${challenge_tmp}" -w "%{http_code}" -X POST "${GATEWAY_URL}/api/v1/op/${receipt_contract_id}/set_admin" -H "content-type: application/json" -H "idempotency-key: challenge-${timestamp}" -d "{\"new_admin\":\"${admin_address}\"}")"
+challenge_response_json="$(jq -Rs 'try fromjson catch .' "${challenge_tmp}")"
+
 idempotency_key="e2e-${timestamp}"
 invoke_tmp="$(mktemp)"
-invoke_status="$(curl -sS -o "${invoke_tmp}" -w "%{http_code}" -X POST "${GATEWAY_URL}/api/v1/op/${receipt_contract_id}/set_admin" -H "content-type: application/json" -H "idempotency-key: ${idempotency_key}" -d "{\"new_admin\":\"${admin_address}\"}")"
+invoke_status="$(curl -sS -o "${invoke_tmp}" -w "%{http_code}" -X GET "${GATEWAY_URL}/api/v1/op/${receipt_contract_id}/admin" -H "idempotency-key: ${idempotency_key}")"
 
 operations_json="$(curl -sS "${GATEWAY_URL}/operations" || echo '[]')"
 operations_count="$(printf '%s' "${operations_json}" | jq -r 'if type=="array" then length elif (type=="object" and (.operations? | type) == "array") then .operations|length elif (type=="object" and (.data? | type) == "array") then .data|length else 0 end')"
@@ -183,6 +199,8 @@ jq -n \
   --arg registerReceiptStatus "${register_receipt_status}" \
   --arg registerRegistryOutput "${register_registry_output:0:800}" \
   --arg registerReceiptOutput "${register_receipt_output:0:800}" \
+  --argjson paymentChallengeStatus "${challenge_status}" \
+  --argjson paymentChallengeResponse "${challenge_response_json}" \
   --argjson invokeHttpStatus "${invoke_status}" \
   --argjson invokeResponse "${invoke_response_json}" \
   --argjson operationsCount "${operations_count}" \
@@ -201,6 +219,8 @@ jq -n \
       registerReceiptStatus: $registerReceiptStatus,
       registerRegistryOutput: $registerRegistryOutput,
       registerReceiptOutput: $registerReceiptOutput,
+      paymentChallengeStatus: $paymentChallengeStatus,
+      paymentChallengeResponse: $paymentChallengeResponse,
       invokeHttpStatus: $invokeHttpStatus,
       invokeResponse: $invokeResponse,
       operationsCount: $operationsCount,
@@ -219,7 +239,7 @@ jq -n \
       } else {} end)
   )' >"${output_file}"
 
-rm -f "${invoke_tmp}"
+rm -f "${invoke_tmp}" "${challenge_tmp}"
 
 echo "E2E proof artifact: ${output_file}"
 echo "Gateway log: ${gateway_log}"
