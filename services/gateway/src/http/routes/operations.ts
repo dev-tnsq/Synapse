@@ -60,6 +60,72 @@ export function buildExplorerBase(network: StellarNetwork): string {
   }
 }
 
+type DiscoveryPaymentConfig = Pick<OperationsRouteDependencies["paymentConfig"], "networkPassphrase" | "payToAddress">;
+
+export function buildContractDiscovery(
+  registry: OperationRegistry,
+  _network: StellarNetwork,
+  explorerBase: string,
+) {
+  const grouped = new Map<string, CanonicalOperationSpec[]>();
+
+  for (const operation of registry.list()) {
+    const existing = grouped.get(operation.contractId);
+    if (existing) {
+      existing.push(operation);
+    } else {
+      grouped.set(operation.contractId, [operation]);
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([contractId, operations]) => {
+      const sortedOperations = [...operations].sort((left, right) => left.id.localeCompare(right.id));
+      const prices = sortedOperations.map((operation) => operation.priceStroops);
+
+      return {
+        contractId,
+        ...(explorerBase ? { contractExplorerUrl: explorerBase + "/contract/" + contractId } : {}),
+        paidOperations: sortedOperations.filter((operation) => operation.paymentRequired).length,
+        freeOperations: sortedOperations.filter((operation) => !operation.paymentRequired).length,
+        minPriceStroops: prices.length > 0 ? Math.min(...prices) : 0,
+        maxPriceStroops: prices.length > 0 ? Math.max(...prices) : 0,
+        operations: sortedOperations.map((operation) => ({
+          id: operation.id,
+          functionName: operation.functionName,
+          method: operation.method,
+          path: operation.path,
+          paymentRequired: operation.paymentRequired,
+          priceStroops: operation.priceStroops,
+        })),
+      };
+    });
+}
+
+export function buildOperationDiscovery(
+  registry: OperationRegistry,
+  paymentConfig: DiscoveryPaymentConfig,
+) {
+  return [...registry.list()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((operation) => ({
+      id: operation.id,
+      contractId: operation.contractId,
+      functionName: operation.functionName,
+      method: operation.method,
+      path: operation.path,
+      paymentRequired: operation.paymentRequired,
+      priceStroops: operation.priceStroops,
+      payment: {
+        challengeRequired: operation.paymentRequired,
+        minAmountStroops: operation.priceStroops,
+        payToAddress: paymentConfig.payToAddress,
+        networkPassphrase: paymentConfig.networkPassphrase,
+      },
+    }));
+}
+
 function mapErrorStatus(error: CanonicalFailure): number {
   switch (error.error.code) {
     case "OPERATION_NOT_FOUND":
@@ -355,40 +421,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
     if (method === "GET" && path === "/api/v1/discovery/contracts") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
       const explorerBase = buildExplorerBase(network);
-      const grouped = new Map<string, CanonicalOperationSpec[]>();
-
-      for (const operation of deps.registry.list()) {
-        const existing = grouped.get(operation.contractId);
-        if (existing) {
-          existing.push(operation);
-        } else {
-          grouped.set(operation.contractId, [operation]);
-        }
-      }
-
-      const contracts = Array.from(grouped.entries())
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([contractId, operations]) => {
-          const sortedOperations = [...operations].sort((left, right) => left.id.localeCompare(right.id));
-          const prices = sortedOperations.map((operation) => operation.priceStroops);
-
-          return {
-            contractId,
-            ...(explorerBase ? { contractExplorerUrl: explorerBase + "/contract/" + contractId } : {}),
-            paidOperations: sortedOperations.filter((operation) => operation.paymentRequired).length,
-            freeOperations: sortedOperations.filter((operation) => !operation.paymentRequired).length,
-            minPriceStroops: prices.length > 0 ? Math.min(...prices) : 0,
-            maxPriceStroops: prices.length > 0 ? Math.max(...prices) : 0,
-            operations: sortedOperations.map((operation) => ({
-              id: operation.id,
-              functionName: operation.functionName,
-              method: operation.method,
-              path: operation.path,
-              paymentRequired: operation.paymentRequired,
-              priceStroops: operation.priceStroops,
-            })),
-          };
-        });
+      const contracts = buildContractDiscovery(deps.registry, network, explorerBase);
 
       sendJson(res, 200, {
         network,
@@ -400,27 +433,40 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
 
     if (method === "GET" && path === "/api/v1/discovery/operations") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
-      const operations = [...deps.registry.list()]
-        .sort((left, right) => left.id.localeCompare(right.id))
-        .map((operation) => ({
-          id: operation.id,
-          contractId: operation.contractId,
-          functionName: operation.functionName,
-          method: operation.method,
-          path: operation.path,
-          paymentRequired: operation.paymentRequired,
-          priceStroops: operation.priceStroops,
-          payment: {
-            challengeRequired: operation.paymentRequired,
-            minAmountStroops: operation.priceStroops,
-            payToAddress: deps.paymentConfig.payToAddress,
-            networkPassphrase: deps.paymentConfig.networkPassphrase,
-          },
-        }));
+      const operations = buildOperationDiscovery(deps.registry, deps.paymentConfig);
 
       sendJson(res, 200, {
         network,
         generatedAt: Date.now(),
+        operations,
+      });
+      return true;
+    }
+
+
+    if (method === "GET" && path === "/api/v1/discovery/manifest") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const explorerBase = buildExplorerBase(network);
+      const contracts = buildContractDiscovery(deps.registry, network, explorerBase);
+      const operations = buildOperationDiscovery(deps.registry, deps.paymentConfig);
+      const paidOperations = operations.filter((operation) => operation.paymentRequired).length;
+      const freeOperations = operations.length - paidOperations;
+
+      sendJson(res, 200, {
+        network,
+        generatedAt: Date.now(),
+        paymentDefaults: {
+          payToAddress: deps.paymentConfig.payToAddress,
+          networkPassphrase: deps.paymentConfig.networkPassphrase,
+          challengeTtlSeconds: deps.paymentConfig.challengeTtlSeconds,
+        },
+        summary: {
+          contracts: contracts.length,
+          operations: operations.length,
+          paidOperations,
+          freeOperations,
+        },
+        contracts,
         operations,
       });
       return true;
