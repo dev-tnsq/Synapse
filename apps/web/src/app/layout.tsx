@@ -1,20 +1,24 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Syne } from "next/font/google";
+import { TopNav } from "./components/top-nav";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
+  weight: ["400", "500", "600"],
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const syne = Syne({
+  variable: "--font-syne",
+  weight: ["400", "500", "600", "700"],
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "synapse control plane",
-  description: "stellar mcp gateway operations dashboard",
+  title: "synapse gateway | paid api and mcp operations",
+  description:
+    "operate paid contract APIs and MCP tools through the Synapse Stellar gateway with x402 flows, proof artifacts, and on-chain settlement visibility.",
 };
 
 export default function RootLayout({
@@ -25,9 +29,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${ibmPlexMono.variable} ${syne.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="app-body">
+        <div className="app-shell">
+          <TopNav />
+          <div className="content-shell">{children}</div>
+        </div>
+      </body>
     </html>
   );
 }
