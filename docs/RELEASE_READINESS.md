@@ -33,6 +33,17 @@
 - Durable persistence is required to replace in-memory stores.
 - Authenticated facilitator flow is not fully implemented.
 
+## Trust and decentralization readiness gates
+
+- [ ] Signed gateway receipt envelope is enabled for every paid response and verified by an external checker.
+- [ ] Response hash anchoring plan is active (batch root anchor minimum) and evidence is archived.
+- [ ] Idempotency and anti-replay checks are enforced (duplicate key and stale nonce tests pass).
+- [ ] Provider payout policy constraints are enforced (spend caps, allowlists, expiry, nonce).
+- [ ] Open-source reproducible gateway release is published with reproducible build evidence.
+- [ ] Discovery freshness checks enforce openapi_hash and updated_at validation.
+- [ ] Pricing fallback behavior is deterministic and blocks execution when no valid price is available.
+- [ ] Current migration phase owner and exit gate status are documented and approved.
+
 ## Go/No-Go checklist
 
 - [ ] Contracts build successfully for wasm target.

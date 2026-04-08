@@ -2,21 +2,32 @@
   "name": "synapse",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10",
+  "packageManager": "npm@10.0.0",
   "workspaces": [
     "apps/*",
     "services/*",
     "tools/*"
   ],
   "scripts": {
-    "dev": "npm run -ws dev --if-present",
-    "build": "npm run -ws build --if-present",
-    "test": "npm run -ws test --if-present",
-    "lint": "npm run -ws lint --if-present",
-    "typecheck": "npm run -ws typecheck --if-present",
+    "dev": "npm run --workspaces dev --if-present",
+    "gateway:dev": "bash scripts/dev-gateway.sh",
+    "gateway:db:status": "bash scripts/gateway-db-status.sh",
+    "web:dev": "bash scripts/dev-web.sh",
+    "project:dev": "bash scripts/dev-project.sh",
+    "provider:smoke": "bash scripts/provider-smoke.sh",
+    "release:evidence": "bash scripts/release-evidence.sh",
+    "ship:check": "bash scripts/ship-check.sh",
+    "agent:tools": "node scripts/generate-agent-tools.mjs",
+    "build": "npm run --workspaces build --if-present",
+    "test": "npm run --workspaces test --if-present",
+    "lint": "npm run --workspaces lint --if-present",
+    "typecheck": "npm run --workspaces typecheck --if-present",
     "contracts:build": "cd contracts && cargo build --target wasm32v1-none --release",
     "contracts:test": "cd contracts && cargo test",
     "contracts:deploy": "bash contracts/scripts/deploy.sh",
     "cli:publish:check": "npm run -w tools/cli publish:check"
+  },
+  "devDependencies": {
+    "tailwindcss": "^4.2.2"
   }
 }
