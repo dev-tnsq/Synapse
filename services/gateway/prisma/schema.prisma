@@ -1,0 +1,26 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum IdempotencyStatus {
+  pending
+  completed
+  failed
+}
+
+model IdempotencyRecord {
+  key         String            @id
+  fingerprint String
+  status      IdempotencyStatus
+  value       Json?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  expiresAt   DateTime
+
+  @@index([expiresAt])
+}

@@ -4,12 +4,25 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { URL } from "node:url";
 
+import type { x402ResourceServer } from "@x402/core/server";
+import {
+  decodePaymentSignatureHeader,
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+} from "@x402/core/http";
+import type { PaymentPayload } from "@x402/core/types";
 import {
   parseSorobanAbiToCanonical,
   type SorobanAbiArg,
   type SorobanAbiFn,
   type SorobanContractAbi,
 } from "../../core/abi-parser";
+import {
+  hashJson,
+  signReceiptEnvelope,
+  verifyReceiptEnvelope,
+  type SignedReceiptEnvelope,
+} from "../../receipts/envelope";
 import { OperationRegistry } from "../../core/operation-registry";
 import {
   GatewayError,
@@ -20,21 +33,45 @@ import {
   type CanonicalOperationSpec,
   type JsonValue,
 } from "../../types/canonical";
-import { buildX402Challenge } from "../../x402/challenge";
 import {
   createIdempotencyFingerprint,
-  InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../x402/idempotency-store";
-import { InMemoryPaymentVerifier, type PaymentProof, type PaymentReceipt } from "../../x402/verifier";
 
 export interface OperationsRouteDependencies {
   readonly registry: OperationRegistry;
-  readonly idempotencyStore: InMemoryIdempotencyStore<CanonicalOperationResult>;
-  readonly paymentVerifier: InMemoryPaymentVerifier;
+  readonly idempotencyStore: IdempotencyStore<CanonicalOperationResult>;
+  readonly x402Server?: x402ResourceServer;
+  readonly paymentProvider: "x402" | "mpp";
+  readonly processMppPayment?: (input: {
+    method: "GET" | "POST";
+    pathWithQuery: string;
+    operation: CanonicalOperationSpec;
+    headers: Record<string, string>;
+    body: JsonValue;
+  }) => Promise<
+    | {
+        status: "payment_required";
+        headers: Record<string, string>;
+        body: CanonicalFailure;
+      }
+    | {
+        status: "paid";
+        headers: Record<string, string>;
+        paymentProofId?: string;
+      }
+  >;
   readonly paymentConfig: {
+    readonly x402Network: `${string}:${string}`;
+    readonly assetAddress: string;
     readonly networkPassphrase: string;
     readonly payToAddress: string;
     readonly challengeTtlSeconds: number;
+  };
+  readonly receiptConfig: {
+    readonly signerId: string;
+    readonly signingSecret: string;
+    readonly payToAddress: string;
   };
   readonly execute: (invocation: CanonicalOperationInvocation) => Promise<JsonValue>;
 }
@@ -219,6 +256,64 @@ function loadLatestProofSummary(explorerBase: string): {
 
 type DiscoveryPaymentConfig = Pick<OperationsRouteDependencies["paymentConfig"], "networkPassphrase" | "payToAddress">;
 
+function resolveOperationPayToAddress(
+  operation: CanonicalOperationSpec,
+  defaultPayToAddress: string,
+): string {
+  return operation.beneficiaryAddress ?? defaultPayToAddress;
+}
+
+function hasOperationMetadata(operation: CanonicalOperationSpec): boolean {
+  return (
+    operation.providerId !== undefined ||
+    operation.sellerId !== undefined ||
+    operation.beneficiaryAddress !== undefined
+  );
+}
+
+type CanonicalFields = Readonly<Record<string, { readonly type: string; readonly required?: boolean; readonly description?: string }>>;
+
+function toJsonSchemaFromCanonicalFields(fields: CanonicalFields | undefined): {
+  type: "object";
+  properties: Record<string, { type: string; description?: string }>;
+  required?: string[];
+  additionalProperties: true;
+} {
+  if (!fields) {
+    return {
+      type: "object",
+      properties: {},
+      additionalProperties: true,
+    };
+  }
+
+  const properties: Record<string, { type: string; description?: string }> = {};
+  const required: string[] = [];
+
+  for (const [name, field] of Object.entries(fields)) {
+    const schema: { type: string; description?: string } = {
+      type: typeof field.type === "string" ? field.type : "string",
+    };
+
+    if (typeof field.description === "string" && field.description.length > 0) {
+      schema.description = field.description;
+    }
+
+    properties[name] = schema;
+
+    if (field.required === true) {
+      required.push(name);
+    }
+  }
+
+  return {
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+    additionalProperties: true,
+  };
+}
+
 export function buildContractDiscovery(
   registry: OperationRegistry,
   _network: StellarNetwork,
@@ -240,6 +335,10 @@ export function buildContractDiscovery(
     .map(([contractId, operations]) => {
       const sortedOperations = [...operations].sort((left, right) => left.id.localeCompare(right.id));
       const prices = sortedOperations.map((operation) => operation.priceStroops);
+      const providerId = sortedOperations.find((operation) => operation.providerId !== undefined)?.providerId;
+      const sellerId = sortedOperations.find((operation) => operation.sellerId !== undefined)?.sellerId;
+      const beneficiaryAddress =
+        sortedOperations.find((operation) => operation.beneficiaryAddress !== undefined)?.beneficiaryAddress;
 
       return {
         contractId,
@@ -248,6 +347,9 @@ export function buildContractDiscovery(
         freeOperations: sortedOperations.filter((operation) => !operation.paymentRequired).length,
         minPriceStroops: prices.length > 0 ? Math.min(...prices) : 0,
         maxPriceStroops: prices.length > 0 ? Math.max(...prices) : 0,
+        ...(providerId !== undefined ? { providerId } : {}),
+        ...(sellerId !== undefined ? { sellerId } : {}),
+        ...(beneficiaryAddress !== undefined ? { beneficiaryAddress } : {}),
         operations: sortedOperations.map((operation) => ({
           id: operation.id,
           functionName: operation.functionName,
@@ -274,13 +376,184 @@ export function buildOperationDiscovery(
       path: operation.path,
       paymentRequired: operation.paymentRequired,
       priceStroops: operation.priceStroops,
+      ...(operation.providerId !== undefined ? { providerId: operation.providerId } : {}),
+      ...(operation.sellerId !== undefined ? { sellerId: operation.sellerId } : {}),
+      ...(operation.beneficiaryAddress !== undefined
+        ? { beneficiaryAddress: operation.beneficiaryAddress }
+        : {}),
       payment: {
         challengeRequired: operation.paymentRequired,
         minAmountStroops: operation.priceStroops,
-        payToAddress: paymentConfig.payToAddress,
+        payToAddress: resolveOperationPayToAddress(operation, paymentConfig.payToAddress),
         networkPassphrase: paymentConfig.networkPassphrase,
       },
     }));
+}
+
+export function buildAgentToolDiscovery(registry: OperationRegistry) {
+  return [...registry.list()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((operation) => {
+      const method = operation.method.toUpperCase();
+      const paymentRequired = operation.paymentRequired;
+
+      return {
+        name: operation.id,
+        description: operation.description,
+        method,
+        path: operation.path,
+        paymentRequired,
+        priceStroops: operation.priceStroops,
+        idempotencyRequired: true,
+        inputSchema: method === "GET"
+          ? toJsonSchemaFromCanonicalFields(operation.request.query)
+          : toJsonSchemaFromCanonicalFields(operation.request.body),
+        invocation: {
+          url: operation.path,
+          method,
+          requiredHeaders: ["idempotency-key", ...(paymentRequired ? ["payment-signature"] : [])],
+        },
+        ...(hasOperationMetadata(operation)
+          ? {
+              metadata: {
+                ...(operation.providerId !== undefined ? { providerId: operation.providerId } : {}),
+                ...(operation.sellerId !== undefined ? { sellerId: operation.sellerId } : {}),
+                ...(operation.beneficiaryAddress !== undefined
+                  ? { beneficiaryAddress: operation.beneficiaryAddress }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+    });
+}
+
+type OpenApiSpec = {
+  openapi: "3.1.0";
+  info: {
+    title: string;
+    version: string;
+    description: string;
+  };
+  servers: Array<{ url: string }>;
+  paths: Record<string, Record<string, unknown>>;
+};
+
+export function buildOpenApiSpec(
+  registry: OperationRegistry,
+  paymentConfig: DiscoveryPaymentConfig,
+): OpenApiSpec {
+  const paths: Record<string, Record<string, unknown>> = {};
+
+  for (const operation of registry.list()) {
+    const pathItem = paths[operation.path] ?? {};
+    const methodKey = operation.method.toLowerCase();
+
+    pathItem[methodKey] = {
+      operationId: operation.id,
+      summary: operation.description,
+      tags: [operation.contractId],
+      parameters: operation.method === "GET"
+        ? [
+            {
+              name: "idempotency-key",
+              in: "header",
+              required: true,
+              schema: { type: "string" },
+              description: "Required idempotency key for safe retries.",
+            },
+          ]
+        : [
+            {
+              name: "idempotency-key",
+              in: "header",
+              required: true,
+              schema: { type: "string" },
+              description: "Required idempotency key for safe retries.",
+            },
+          ],
+      requestBody:
+        operation.method === "POST"
+          ? {
+              required: false,
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    additionalProperties: true,
+                  },
+                },
+              },
+            }
+          : undefined,
+      responses: {
+        "200": {
+          description: "Successful invocation",
+        },
+        "400": {
+          description: "Invalid request",
+        },
+        "402": {
+          description: "Payment required or invalid payment proof",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  ok: { type: "boolean", const: false },
+                  error: {
+                    type: "object",
+                    properties: {
+                      code: { type: "string" },
+                      message: { type: "string" },
+                    },
+                    required: ["code", "message"],
+                  },
+                },
+                required: ["ok", "error"],
+              },
+            },
+          },
+        },
+      },
+      "x-synapse-payment": {
+        required: operation.paymentRequired,
+        priceStroops: operation.priceStroops,
+        payToAddress: resolveOperationPayToAddress(operation, paymentConfig.payToAddress),
+        networkPassphrase: paymentConfig.networkPassphrase,
+      },
+    };
+
+    paths[operation.path] = pathItem;
+  }
+
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "Synapse Gateway Operation API",
+      version: "0.1.0",
+      description: "Machine-readable contract operation surface generated from canonical operation registry.",
+    },
+    servers: [{ url: "/" }],
+    paths,
+  };
+}
+
+function hashOpenApiSpec(openapi: OpenApiSpec): string {
+  return createHash("sha256").update(JSON.stringify(openapi)).digest("hex");
+}
+
+function buildDiscoveryMetadata(
+  registry: OperationRegistry,
+  paymentConfig: DiscoveryPaymentConfig,
+  generatedAt: number,
+): { updatedAt: number; openapiHash: string } {
+  const openapi = buildOpenApiSpec(registry, paymentConfig);
+
+  return {
+    updatedAt: generatedAt,
+    openapiHash: hashOpenApiSpec(openapi),
+  };
 }
 
 function mapErrorStatus(error: CanonicalFailure): number {
@@ -340,15 +613,15 @@ async function readJsonBody(req: IncomingMessage): Promise<JsonValue> {
   }
 }
 
-function parsePaymentProof(headers: Record<string, string>): PaymentProof | null {
-  const raw = headers["x-payment-proof"];
+function parsePaymentProof(headers: Record<string, string>): PaymentPayload | null {
+  const raw = headers["payment-signature"];
   if (!raw) {
     return null;
   }
   try {
-    return JSON.parse(raw) as PaymentProof;
+    return decodePaymentSignatureHeader(raw);
   } catch {
-    throw new GatewayError("INVALID_PAYMENT_PROOF", "x-payment-proof header is not valid JSON", 402);
+    throw new GatewayError("INVALID_PAYMENT_PROOF", "payment-signature header is invalid", 402);
   }
 }
 
@@ -360,6 +633,11 @@ function parseRegisterContractBody(body: JsonValue): {
   readonly contractId: string;
   readonly abi: SorobanContractAbi;
   readonly basePath?: string;
+  readonly metadata?: {
+    readonly providerId?: string;
+    readonly sellerId?: string;
+    readonly beneficiaryAddress?: string;
+  };
 } {
   if (!isJsonObject(body)) {
     throw new GatewayError("INVALID_REQUEST", "Request body must be an object", 400);
@@ -470,14 +748,46 @@ function parseRegisterContractBody(body: JsonValue): {
       });
     }
 
+    const payable = fn.payable;
+    if (typeof payable !== "boolean") {
+      throw new GatewayError(
+        "INVALID_REQUEST",
+        `abi.functions[${fnIndex}].payable must be explicitly set to true or false`,
+        400,
+      );
+    }
+
+    const rawPriceStroops = fn.priceStroops;
+    let parsedPriceStroops: number | undefined;
+    if (rawPriceStroops !== undefined) {
+      if (typeof rawPriceStroops !== "number" || !Number.isInteger(rawPriceStroops) || rawPriceStroops < 0) {
+        throw new GatewayError(
+          "INVALID_REQUEST",
+          `abi.functions[${fnIndex}].priceStroops must be an integer >= 0 when provided`,
+          400,
+        );
+      }
+      parsedPriceStroops = rawPriceStroops;
+    }
+
+    if (payable && (parsedPriceStroops === undefined || parsedPriceStroops <= 0)) {
+      throw new GatewayError(
+        "INVALID_REQUEST",
+        `abi.functions[${fnIndex}].priceStroops must be an integer > 0 when payable is true`,
+        400,
+      );
+    }
+
+    const priceStroops = payable ? parsedPriceStroops : 0;
+
     return {
       name,
       inputs: parsedInputs,
       outputs: parsedOutputs,
       doc: typeof fn.doc === "string" ? fn.doc : undefined,
       readonly: typeof fn.readonly === "boolean" ? fn.readonly : undefined,
-      payable: typeof fn.payable === "boolean" ? fn.payable : undefined,
-      priceStroops: typeof fn.priceStroops === "number" ? fn.priceStroops : undefined,
+      payable,
+      priceStroops,
     };
   });
 
@@ -486,12 +796,193 @@ function parseRegisterContractBody(body: JsonValue): {
     throw new GatewayError("INVALID_REQUEST", "basePath must be a string when provided", 400);
   }
 
+  const providerId = body.providerId;
+  if (providerId !== undefined && typeof providerId !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "providerId must be a string when provided", 400);
+  }
+
+  const sellerId = body.sellerId;
+  if (sellerId !== undefined && typeof sellerId !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "sellerId must be a string when provided", 400);
+  }
+
+  const beneficiaryAddress = body.beneficiaryAddress;
+  if (beneficiaryAddress !== undefined && typeof beneficiaryAddress !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "beneficiaryAddress must be a string when provided", 400);
+  }
+
+  const payToAddress = body.payToAddress;
+  if (payToAddress !== undefined && typeof payToAddress !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "payToAddress must be a string when provided", 400);
+  }
+
+  const resolvedBeneficiaryAddress = beneficiaryAddress ?? payToAddress;
+  if (resolvedBeneficiaryAddress !== undefined && !/^[GC][A-Z2-7]{55}$/.test(resolvedBeneficiaryAddress)) {
+    throw new GatewayError(
+      "INVALID_REQUEST",
+      "beneficiaryAddress/payToAddress must start with G or C and be 56 base32 characters",
+      400,
+    );
+  }
+  if (
+    beneficiaryAddress !== undefined &&
+    payToAddress !== undefined &&
+    beneficiaryAddress !== payToAddress
+  ) {
+    throw new GatewayError(
+      "INVALID_REQUEST",
+      "beneficiaryAddress and payToAddress must match when both are provided",
+      400,
+    );
+  }
+
+  const metadata =
+    providerId !== undefined || sellerId !== undefined || resolvedBeneficiaryAddress !== undefined
+      ? {
+          ...(providerId !== undefined ? { providerId } : {}),
+          ...(sellerId !== undefined ? { sellerId } : {}),
+          ...(resolvedBeneficiaryAddress !== undefined
+            ? { beneficiaryAddress: resolvedBeneficiaryAddress }
+            : {}),
+        }
+      : undefined;
+
   return {
     contractId,
     abi: {
       functions: parsedFunctions,
     },
     basePath,
+    metadata,
+  };
+}
+
+type VerifyReceiptExpected = {
+  readonly operationId?: string;
+  readonly receiptId?: string;
+  readonly requestHash?: string;
+  readonly responseBody?: JsonValue;
+  readonly priceStroops?: number;
+  readonly payToAddress?: string;
+};
+
+type VerifyReceiptRequest = {
+  readonly envelope: SignedReceiptEnvelope;
+  readonly expected?: VerifyReceiptExpected;
+};
+
+function requiredStringField(
+  value: JsonValue,
+  fieldName: string,
+): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new GatewayError("INVALID_REQUEST", `${fieldName} must be a non-empty string`, 400);
+  }
+  return value;
+}
+
+function parseSignedReceiptEnvelope(body: JsonValue): SignedReceiptEnvelope {
+  if (!isJsonObject(body)) {
+    throw new GatewayError("INVALID_REQUEST", "envelope must be an object", 400);
+  }
+
+  const issuedAt = body.issuedAt;
+  if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) {
+    throw new GatewayError("INVALID_REQUEST", "envelope.issuedAt must be a finite number", 400);
+  }
+
+  const paid = body.paid;
+  if (typeof paid !== "boolean") {
+    throw new GatewayError("INVALID_REQUEST", "envelope.paid must be a boolean", 400);
+  }
+
+  const priceStroops = body.priceStroops;
+  if (typeof priceStroops !== "number" || !Number.isInteger(priceStroops) || priceStroops < 0) {
+    throw new GatewayError("INVALID_REQUEST", "envelope.priceStroops must be an integer >= 0", 400);
+  }
+
+  const paymentProofId = body.paymentProofId;
+  if (paymentProofId !== undefined && typeof paymentProofId !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "envelope.paymentProofId must be a string when provided", 400);
+  }
+
+  return {
+    version: requiredStringField(body.version, "envelope.version"),
+    algorithm: requiredStringField(body.algorithm, "envelope.algorithm"),
+    signerId: requiredStringField(body.signerId, "envelope.signerId"),
+    issuedAt,
+    receiptId: requiredStringField(body.receiptId, "envelope.receiptId"),
+    operationId: requiredStringField(body.operationId, "envelope.operationId"),
+    requestHash: requiredStringField(body.requestHash, "envelope.requestHash"),
+    responseHash: requiredStringField(body.responseHash, "envelope.responseHash"),
+    paid,
+    paymentProofId,
+    priceStroops,
+    payToAddress: requiredStringField(body.payToAddress, "envelope.payToAddress"),
+    signature: requiredStringField(body.signature, "envelope.signature"),
+  };
+}
+
+function parseVerifyReceiptRequest(body: JsonValue): VerifyReceiptRequest {
+  if (!isJsonObject(body)) {
+    throw new GatewayError("INVALID_REQUEST", "Request body must be an object", 400);
+  }
+
+  const envelope = parseSignedReceiptEnvelope(body.envelope ?? null);
+  const expectedValue = body.expected;
+
+  if (expectedValue === undefined) {
+    return { envelope };
+  }
+
+  if (!isJsonObject(expectedValue)) {
+    throw new GatewayError("INVALID_REQUEST", "expected must be an object when provided", 400);
+  }
+
+  const operationId = expectedValue.operationId;
+  if (operationId !== undefined && typeof operationId !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "expected.operationId must be a string when provided", 400);
+  }
+
+  const receiptId = expectedValue.receiptId;
+  if (receiptId !== undefined && typeof receiptId !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "expected.receiptId must be a string when provided", 400);
+  }
+
+  const requestHash = expectedValue.requestHash;
+  if (requestHash !== undefined && typeof requestHash !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "expected.requestHash must be a string when provided", 400);
+  }
+
+  const priceStroops = expectedValue.priceStroops;
+  if (
+    priceStroops !== undefined &&
+    (typeof priceStroops !== "number" || !Number.isInteger(priceStroops) || priceStroops < 0)
+  ) {
+    throw new GatewayError(
+      "INVALID_REQUEST",
+      "expected.priceStroops must be an integer >= 0 when provided",
+      400,
+    );
+  }
+
+  const payToAddress = expectedValue.payToAddress;
+  if (payToAddress !== undefined && typeof payToAddress !== "string") {
+    throw new GatewayError("INVALID_REQUEST", "expected.payToAddress must be a string when provided", 400);
+  }
+
+  const expected: VerifyReceiptExpected = {
+    operationId,
+    receiptId,
+    requestHash,
+    responseBody: expectedValue.responseBody,
+    priceStroops,
+    payToAddress,
+  };
+
+  return {
+    envelope,
+    expected,
   };
 }
 
@@ -510,18 +1001,46 @@ function sendJson(
   res.end(payload);
 }
 
-function challengeForOperation(
+async function challengeForOperation(
   operation: CanonicalOperationSpec,
+  x402Server: x402ResourceServer,
   paymentConfig: OperationsRouteDependencies["paymentConfig"],
-): ReturnType<typeof buildX402Challenge> {
-  return buildX402Challenge({
-    operationId: operation.id,
-    resource: operation.path,
-    priceStroops: operation.priceStroops,
-    networkPassphrase: paymentConfig.networkPassphrase,
-    payToAddress: paymentConfig.payToAddress,
-    ttlSeconds: paymentConfig.challengeTtlSeconds,
+): Promise<{ status: number; body: CanonicalFailure; headers: Record<string, string> }> {
+  const payToAddress = resolveOperationPayToAddress(operation, paymentConfig.payToAddress);
+  const requirements = await x402Server.buildPaymentRequirements({
+    scheme: "exact",
+    network: paymentConfig.x402Network,
+    payTo: payToAddress,
+    price: {
+      asset: paymentConfig.assetAddress,
+      amount: String(operation.priceStroops),
+    },
+    maxTimeoutSeconds: paymentConfig.challengeTtlSeconds,
   });
+
+  const paymentRequired = await x402Server.createPaymentRequiredResponse(
+    requirements,
+    {
+      url: operation.path,
+      description: operation.description,
+      mimeType: "application/json",
+    },
+    "Payment required",
+  );
+
+  return {
+    status: 402,
+    body: {
+      ok: false,
+      error: {
+        code: "PAYMENT_REQUIRED",
+        message: "Missing payment signature",
+      },
+    },
+    headers: {
+      "payment-required": encodePaymentRequiredHeader(paymentRequired),
+    },
+  };
 }
 
 export function createOperationsRouteHandler(deps: OperationsRouteDependencies) {
@@ -533,6 +1052,16 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
 
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
+
+    if (method === "GET" && path === "/health") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      sendJson(res, 200, {
+        status: "ok",
+        network,
+        generatedAt: Date.now(),
+      });
+      return true;
+    }
 
     if (method === "GET" && path === "/operations") {
       sendJson(res, 200, {
@@ -549,6 +1078,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
           parsedBody.contractId,
           parsedBody.abi,
           parsedBody.basePath,
+          parsedBody.metadata,
         );
         const registeredOperationIds = deps.registry.registerMany(operations);
 
@@ -578,11 +1108,14 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
     if (method === "GET" && path === "/api/v1/discovery/contracts") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
       const explorerBase = buildExplorerBase(network);
+      const generatedAt = Date.now();
       const contracts = buildContractDiscovery(deps.registry, network, explorerBase);
+      const discovery = buildDiscoveryMetadata(deps.registry, deps.paymentConfig, generatedAt);
 
       sendJson(res, 200, {
         network,
-        generatedAt: Date.now(),
+        generatedAt,
+        discovery,
         contracts,
       });
       return true;
@@ -590,12 +1123,36 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
 
     if (method === "GET" && path === "/api/v1/discovery/operations") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const generatedAt = Date.now();
       const operations = buildOperationDiscovery(deps.registry, deps.paymentConfig);
+      const discovery = buildDiscoveryMetadata(deps.registry, deps.paymentConfig, generatedAt);
 
       sendJson(res, 200, {
         network,
-        generatedAt: Date.now(),
+        generatedAt,
+        discovery,
         operations,
+      });
+      return true;
+    }
+
+    if (method === "GET" && path === "/api/v1/discovery/agent-tools") {
+      const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
+      const generatedAt = Date.now();
+      const tools = buildAgentToolDiscovery(deps.registry);
+      const paid = tools.filter((tool) => tool.paymentRequired).length;
+      const discovery = buildDiscoveryMetadata(deps.registry, deps.paymentConfig, generatedAt);
+
+      sendJson(res, 200, {
+        network,
+        generatedAt,
+        discovery,
+        tools,
+        summary: {
+          total: tools.length,
+          paid,
+          free: tools.length - paid,
+        },
       });
       return true;
     }
@@ -603,12 +1160,15 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
     if (method === "GET" && path === "/api/v1/discovery/proofs") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
       const explorerBase = buildExplorerBase(network);
+      const generatedAt = Date.now();
       const limit = parseProofLimit(url.searchParams.get("limit"));
       const proofHistory = loadProofHistory(explorerBase, limit);
+      const discovery = buildDiscoveryMetadata(deps.registry, deps.paymentConfig, generatedAt);
 
       sendJson(res, 200, {
         network,
-        generatedAt: Date.now(),
+        generatedAt,
+        discovery,
         availableProofs: proofHistory.availableProofs,
         proofs: proofHistory.proofs.map((proof) => ({
           file: proof.file,
@@ -626,15 +1186,18 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
     if (method === "GET" && path === "/api/v1/discovery/manifest") {
       const network = networkFromPassphrase(deps.paymentConfig.networkPassphrase);
       const explorerBase = buildExplorerBase(network);
+      const generatedAt = Date.now();
       const contracts = buildContractDiscovery(deps.registry, network, explorerBase);
       const operations = buildOperationDiscovery(deps.registry, deps.paymentConfig);
       const proof = loadLatestProofSummary(explorerBase);
       const paidOperations = operations.filter((operation) => operation.paymentRequired).length;
       const freeOperations = operations.length - paidOperations;
+      const discovery = buildDiscoveryMetadata(deps.registry, deps.paymentConfig, generatedAt);
 
       sendJson(res, 200, {
         network,
-        generatedAt: Date.now(),
+        generatedAt,
+        discovery,
         paymentDefaults: {
           payToAddress: deps.paymentConfig.payToAddress,
           networkPassphrase: deps.paymentConfig.networkPassphrase,
@@ -651,6 +1214,92 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
         proof,
       });
       return true;
+    }
+
+    if (method === "GET" && path === "/api/v1/discovery/openapi.json") {
+      const generatedAt = Date.now();
+      const openapi = buildOpenApiSpec(deps.registry, deps.paymentConfig);
+      const openapiHash = hashOpenApiSpec(openapi);
+
+      sendJson(res, 200, openapi, {
+        "x-synapse-openapi-hash": openapiHash,
+        "x-synapse-updated-at": String(generatedAt),
+      });
+      return true;
+    }
+
+    if (method === "POST" && path === "/api/v1/receipts/verify") {
+      try {
+        const body = await readJsonBody(req);
+        const parsed = parseVerifyReceiptRequest(body);
+        const signatureResult = verifyReceiptEnvelope(parsed.envelope, deps.receiptConfig.signingSecret);
+
+        const responseBodyHash =
+          parsed.expected?.responseBody === undefined
+            ? true
+            : parsed.envelope.responseHash === hashJson(parsed.expected.responseBody);
+        const operationId =
+          parsed.expected?.operationId === undefined
+            ? true
+            : parsed.envelope.operationId === parsed.expected.operationId;
+        const receiptId =
+          parsed.expected?.receiptId === undefined
+            ? true
+            : parsed.envelope.receiptId === parsed.expected.receiptId;
+        const requestHash =
+          parsed.expected?.requestHash === undefined
+            ? true
+            : parsed.envelope.requestHash === parsed.expected.requestHash;
+        const priceStroops =
+          parsed.expected?.priceStroops === undefined
+            ? true
+            : parsed.envelope.priceStroops === parsed.expected.priceStroops;
+        const payToAddress =
+          parsed.expected?.payToAddress === undefined
+            ? true
+            : parsed.envelope.payToAddress === parsed.expected.payToAddress;
+
+        sendJson(res, 200, {
+          ok: true,
+          valid:
+            signatureResult.valid &&
+            responseBodyHash &&
+            operationId &&
+            receiptId &&
+            requestHash &&
+            priceStroops &&
+            payToAddress,
+          checks: {
+            signature: signatureResult.valid,
+            responseBodyHash,
+            operationId,
+            receiptId,
+            requestHash,
+            priceStroops,
+            payToAddress,
+          },
+          envelope: {
+            receiptId: parsed.envelope.receiptId,
+            operationId: parsed.envelope.operationId,
+            issuedAt: parsed.envelope.issuedAt,
+            signerId: parsed.envelope.signerId,
+          },
+        });
+        return true;
+      } catch (error: unknown) {
+        if (isGatewayError(error)) {
+          sendJson(res, error.status, error.toFailure());
+          return true;
+        }
+        sendJson(res, 400, {
+          ok: false,
+          error: {
+            code: "INVALID_REQUEST",
+            message: "Invalid request payload",
+          },
+        });
+        return true;
+      }
     }
 
     const operation = deps.registry.getByRoute(method as "GET" | "POST", path);
@@ -697,7 +1346,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
 
     let beginResult;
     try {
-      beginResult = deps.idempotencyStore.begin(idempotencyKey, fingerprint);
+      beginResult = await deps.idempotencyStore.begin(idempotencyKey, fingerprint);
     } catch (error: unknown) {
       const failure = isGatewayError(error)
         ? error.toFailure()
@@ -731,40 +1380,123 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
       return true;
     }
 
-    let paymentReceipt: PaymentReceipt | undefined;
+    let paymentProofId: string | undefined;
+    const responseHeaders: Record<string, string> = {};
     if (operation.paymentRequired) {
+      if (deps.paymentProvider === "mpp" && deps.processMppPayment) {
+        try {
+          const mppResult = await deps.processMppPayment({
+            method: method as "GET" | "POST",
+            pathWithQuery: path + url.search,
+            operation,
+            headers: headerMap,
+            body,
+          });
+
+          if (mppResult.status === "payment_required") {
+            sendJson(res, 402, mppResult.body, mppResult.headers);
+            await deps.idempotencyStore.fail(idempotencyKey, fingerprint, mppResult.body);
+            return true;
+          }
+
+          paymentProofId = mppResult.paymentProofId;
+          Object.assign(responseHeaders, mppResult.headers);
+        } catch (error: unknown) {
+          const failure = isGatewayError(error)
+            ? error.toFailure()
+            : ({
+                ok: false,
+                error: { code: "INVALID_PAYMENT_PROOF", message: "Unable to process MPP payment" },
+              } as const);
+          await deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
+          sendJson(res, mapErrorStatus(failure), failure);
+          return true;
+        }
+      } else {
+      const x402Server = deps.x402Server;
+      if (!x402Server) {
+        const failure: CanonicalFailure = {
+          ok: false,
+          error: {
+            code: "INTERNAL_ERROR",
+            message: "x402 payment server is not configured",
+          },
+        };
+        await deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
+        sendJson(res, 500, failure);
+        return true;
+      }
       try {
-        const proof = parsePaymentProof(headerMap);
-        if (!proof) {
-          const challenge = challengeForOperation(operation, deps.paymentConfig);
+        const paymentPayload = parsePaymentProof(headerMap);
+        if (!paymentPayload) {
+          const challenge = await challengeForOperation(operation, x402Server, deps.paymentConfig);
           sendJson(res, challenge.status, challenge.body, challenge.headers);
-          deps.idempotencyStore.fail(idempotencyKey, fingerprint, {
+          await deps.idempotencyStore.fail(idempotencyKey, fingerprint, {
             ok: false,
             error: {
               code: "PAYMENT_REQUIRED",
-              message: "Missing payment proof",
+              message: "Missing payment signature",
             },
           });
           return true;
         }
 
-        paymentReceipt = await deps.paymentVerifier.verify(proof, {
-          operationId: operation.id,
-          resource: operation.path,
-          minAmountStroops: operation.priceStroops,
+        const requirements = await x402Server.buildPaymentRequirements({
+          scheme: "exact",
+          network: deps.paymentConfig.x402Network,
+          payTo: resolveOperationPayToAddress(operation, deps.paymentConfig.payToAddress),
+          price: {
+            asset: deps.paymentConfig.assetAddress,
+            amount: String(operation.priceStroops),
+          },
+          maxTimeoutSeconds: deps.paymentConfig.challengeTtlSeconds,
         });
+
+        const matchingRequirements = x402Server.findMatchingRequirements(requirements, paymentPayload);
+        if (!matchingRequirements) {
+          throw new GatewayError(
+            "INVALID_PAYMENT_PROOF",
+            "Provided payment does not match operation requirements",
+            402,
+          );
+        }
+
+        const verifyResult = await x402Server.verifyPayment(paymentPayload, matchingRequirements);
+        if (!verifyResult.isValid) {
+          throw new GatewayError(
+            "INVALID_PAYMENT_PROOF",
+            verifyResult.invalidMessage ?? "Unable to verify payment signature",
+            402,
+          );
+        }
+
+        const settlementResult = await x402Server.settlePayment(paymentPayload, matchingRequirements);
+        if (!settlementResult.success) {
+          throw new GatewayError(
+            "INVALID_PAYMENT_PROOF",
+            settlementResult.errorMessage ?? "Unable to settle payment",
+            402,
+          );
+        }
+
+        paymentProofId = settlementResult.transaction;
+        responseHeaders["payment-response"] = encodePaymentResponseHeader(settlementResult);
       } catch (error: unknown) {
         const failure = isGatewayError(error)
           ? error.toFailure()
-          : ({ ok: false, error: { code: "INVALID_PAYMENT_PROOF", message: "Unable to verify payment proof" } } as const);
-        deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
+          : ({
+              ok: false,
+              error: { code: "INVALID_PAYMENT_PROOF", message: "Unable to process payment signature" },
+            } as const);
+        await deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
         if (failure.error.code === "INVALID_PAYMENT_PROOF") {
-          const challenge = challengeForOperation(operation, deps.paymentConfig);
+          const challenge = await challengeForOperation(operation, x402Server, deps.paymentConfig);
           sendJson(res, 402, failure, challenge.headers);
           return true;
         }
         sendJson(res, mapErrorStatus(failure), failure);
         return true;
+      }
       }
     }
 
@@ -780,18 +1512,37 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
 
     try {
       const data = await deps.execute(invocation);
+      const receiptId = createHash("sha256").update(`${operation.id}:${idempotencyKey}`).digest("hex");
+      const signedEnvelope = signReceiptEnvelope(
+        {
+          version: "1",
+          algorithm: "HMAC-SHA256",
+          signerId: deps.receiptConfig.signerId,
+          issuedAt: Date.now(),
+          receiptId,
+          operationId: operation.id,
+          requestHash: fingerprint,
+          responseHash: hashJson(data),
+          paid: operation.paymentRequired,
+          paymentProofId,
+          priceStroops: operation.priceStroops,
+          payToAddress: resolveOperationPayToAddress(operation, deps.paymentConfig.payToAddress),
+        },
+        deps.receiptConfig.signingSecret,
+      );
       const success: CanonicalOperationResult = {
         ok: true,
         data,
         receipt: {
-          receiptId: paymentReceipt?.receiptId ?? createHash("sha256").update(`${operation.id}:${idempotencyKey}`).digest("hex"),
+          receiptId,
           operationId: operation.id,
           paid: operation.paymentRequired,
-          paymentProofId: paymentReceipt?.proofId,
+          paymentProofId,
+          signedEnvelope,
         },
       };
-      deps.idempotencyStore.complete(idempotencyKey, fingerprint, success);
-      sendJson(res, 200, success);
+      await deps.idempotencyStore.complete(idempotencyKey, fingerprint, success);
+      sendJson(res, 200, success, responseHeaders);
       return true;
     } catch (error: unknown) {
       const failure: CanonicalFailure = isGatewayError(error)
@@ -803,7 +1554,7 @@ export function createOperationsRouteHandler(deps: OperationsRouteDependencies) 
               message: "Unhandled execution failure",
             },
           };
-      deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
+      await deps.idempotencyStore.fail(idempotencyKey, fingerprint, failure);
       sendJson(res, mapErrorStatus(failure), failure);
       return true;
     }

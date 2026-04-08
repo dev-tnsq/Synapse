@@ -16,12 +16,22 @@ export type IdempotencyBeginResult<TValue> =
   | { readonly state: "in_progress" }
   | { readonly state: "replay"; readonly record: IdempotencyRecord<TValue> };
 
-export class InMemoryIdempotencyStore<TValue> {
+export interface IdempotencyStore<TValue> {
+  begin(key: string, fingerprint: string, now?: number): Promise<IdempotencyBeginResult<TValue>>;
+  complete(key: string, fingerprint: string, value: TValue, now?: number): Promise<void>;
+  fail(key: string, fingerprint: string, value: TValue, now?: number): Promise<void>;
+}
+
+export class InMemoryIdempotencyStore<TValue> implements IdempotencyStore<TValue> {
   private readonly records = new Map<string, IdempotencyRecord<TValue>>();
 
   public constructor(private readonly ttlMs: number) {}
 
-  public begin(key: string, fingerprint: string, now = Date.now()): IdempotencyBeginResult<TValue> {
+  public async begin(
+    key: string,
+    fingerprint: string,
+    now = Date.now(),
+  ): Promise<IdempotencyBeginResult<TValue>> {
     this.purge(now);
     const existing = this.records.get(key);
     if (!existing) {
@@ -50,7 +60,12 @@ export class InMemoryIdempotencyStore<TValue> {
     return { state: "replay", record: existing };
   }
 
-  public complete(key: string, fingerprint: string, value: TValue, now = Date.now()): void {
+  public async complete(
+    key: string,
+    fingerprint: string,
+    value: TValue,
+    now = Date.now(),
+  ): Promise<void> {
     const existing = this.mustMatch(key, fingerprint);
     this.records.set(key, {
       ...existing,
@@ -60,7 +75,12 @@ export class InMemoryIdempotencyStore<TValue> {
     });
   }
 
-  public fail(key: string, fingerprint: string, value: TValue, now = Date.now()): void {
+  public async fail(
+    key: string,
+    fingerprint: string,
+    value: TValue,
+    now = Date.now(),
+  ): Promise<void> {
     const existing = this.mustMatch(key, fingerprint);
     this.records.set(key, {
       ...existing,

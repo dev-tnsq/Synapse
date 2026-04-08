@@ -58,6 +58,7 @@ export function parseSorobanAbiToCanonical(
   contractId: string,
   abi: SorobanContractAbi,
   basePath = "/operations",
+  metadata?: { providerId?: string; sellerId?: string; beneficiaryAddress?: string },
 ): readonly CanonicalOperationSpec[] {
   return abi.functions.map((fn) => {
     const method = fn.readonly ? "GET" : "POST";
@@ -69,8 +70,11 @@ export function parseSorobanAbiToCanonical(
       description: fn.doc ?? `${contractId}:${fn.name}`,
       method,
       path: `${basePath}/${contractId}/${fn.name}`,
-      paymentRequired: fn.payable ?? true,
-      priceStroops: fn.priceStroops ?? 0,
+      paymentRequired: fn.payable === true,
+      priceStroops: fn.payable === true ? (fn.priceStroops ?? 0) : 0,
+      providerId: metadata?.providerId,
+      sellerId: metadata?.sellerId,
+      beneficiaryAddress: metadata?.beneficiaryAddress,
       request:
         method === "GET"
           ? { query: toFieldSchema(fn.inputs) }

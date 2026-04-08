@@ -1,3 +1,5 @@
+import type { SignedReceiptEnvelope } from "../receipts/envelope";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export interface JsonObject {
@@ -44,6 +46,9 @@ export interface CanonicalOperationSpec {
   readonly path: string;
   readonly paymentRequired: boolean;
   readonly priceStroops: number;
+  readonly providerId?: string;
+  readonly sellerId?: string;
+  readonly beneficiaryAddress?: string;
   readonly request: CanonicalRequestSchema;
   readonly response: CanonicalResponseSchema;
 }
@@ -63,6 +68,7 @@ export interface CanonicalReceipt {
   readonly operationId: string;
   readonly paid: boolean;
   readonly paymentProofId?: string;
+  readonly signedEnvelope?: SignedReceiptEnvelope;
 }
 
 export interface CanonicalSuccess {
